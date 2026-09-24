@@ -1,0 +1,50 @@
+// Package model defines the structured result of harvesting a single SERP.
+package model
+
+import "time"
+
+// SerpResult is the structured output produced for one query.
+type SerpResult struct {
+	Query           string           `json:"query"`
+	FetchedAt       time.Time        `json:"fetched_at"`
+	LatencyMS       int64            `json:"latency_ms"`
+	ProxyUsed       string           `json:"proxy_used,omitempty"`
+	AIOverview      *AIOverview      `json:"ai_overview,omitempty"`
+	FeaturedSnippet *FeaturedSnippet `json:"featured_snippet,omitempty"`
+	PeopleAlsoAsk   []string         `json:"people_also_ask,omitempty"`
+	Organic         []OrganicResult  `json:"organic"`
+
+	// Calibration is set when the parser could not confidently locate one or
+	// more expected blocks. Production selector drift (Google changes its
+	// markup frequently) should route these results to a review queue rather
+	// than silently returning partial/empty data.
+	Calibration *CalibrationNote `json:"calibration,omitempty"`
+}
+
+// OrganicResult is a single organic listing.
+type OrganicResult struct {
+	Position int    `json:"position"`
+	Title    string `json:"title"`
+	URL      string `json:"url"`
+	Snippet  string `json:"snippet"`
+}
+
+// FeaturedSnippet is the "position zero" answer box, when present.
+type FeaturedSnippet struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+	Text  string `json:"text"`
+}
+
+// AIOverview is Google's generative summary block, when present.
+type AIOverview struct {
+	Text    string   `json:"text"`
+	Sources []string `json:"sources"`
+}
+
+// CalibrationNote flags that one or more expected selectors did not match,
+// so this result should not be trusted as complete.
+type CalibrationNote struct {
+	MissingBlocks []string `json:"missing_blocks"`
+	RawHTMLPath   string   `json:"raw_html_path,omitempty"`
+}
