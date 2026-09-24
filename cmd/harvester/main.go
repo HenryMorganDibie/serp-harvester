@@ -3,9 +3,11 @@
 // the worker pool, and report throughput.
 //
 // Mock mode (default) is fully offline and deterministic — safe to run
-// anywhere, including CI. Live mode issues real HTTP requests and should
-// only be run deliberately, at low volume, by someone who has reviewed the
-// target site's Terms of Service. See README.md.
+// anywhere, including CI. Live mode issues real HTTP requests directly to
+// the target and should only be run deliberately, at low volume, by someone
+// who has reviewed the target site's Terms of Service. Provider mode routes
+// through a third-party SERP data API instead of the target directly. See
+// README.md.
 package main
 
 import (
@@ -27,11 +29,12 @@ import (
 	"github.com/HenryMorganDibie/serp-harvester/internal/ratelimit"
 	"github.com/HenryMorganDibie/serp-harvester/internal/store"
 	"github.com/HenryMorganDibie/serp-harvester/internal/worker"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
 	configPath := flag.String("config", "configs/config.example.yaml", "path to YAML config")
-	mode := flag.String("mode", "", "override config mode: mock|live")
+	mode := flag.String("mode", "", "override config mode: mock|live|provider")
 	queriesFlag := flag.String("queries", "", "comma-separated queries, overrides config")
 	iAcceptLiveRisk := flag.Bool("i-have-reviewed-tos", false, "required to run --mode live")
 	flag.Parse()
@@ -46,30 +49,11 @@ func main() {
 	if *queriesFlag != "" {
 		cfg.Queries = strings.Split(*queriesFlag, ",")
 	}
-	if len(cfg.Queries) == 0 {
+	if len(cfg.Queries) == 0 && cfg.QueueBackend != "redis" {
 		log.Fatal("no queries configured (set queries: in config or pass -queries)")
 	}
 
-	var f fetcher.Fetcher
-	switch cfg.Mode {
-	case "mock":
-		f, err = fetcher.NewMockFromDir(cfg.MockFixtureDir)
-		if err != nil {
-			log.Fatalf("build mock fetcher: %v", err)
-		}
-	case "live":
-		if !*iAcceptLiveRisk {
-			fmt.Fprintln(os.Stderr, liveModeWarning)
-			os.Exit(1)
-		}
-		fmt.Fprintln(os.Stderr, liveModeBanner(cfg))
-		f, err = fetcher.NewHTTPFetcher(cfg.LiveEndpoint, cfg.RequestTimeout)
-		if err != nil {
-			log.Fatalf("build http fetcher: %v", err)
-		}
-	default:
-		log.Fatalf("unknown mode %q (want mock|live)", cfg.Mode)
-	}
+	f, p := buildFetcherAndParser(cfg, iAcceptLiveRisk)
 
 	var sink store.Sink
 	if cfg.OutputPath == "-" || cfg.OutputPath == "" {
@@ -93,7 +77,7 @@ func main() {
 		Fetcher:     f,
 		ProxyPool:   proxyPool,
 		Limiter:     limiter,
-		Parser:      parser.New(),
+		Parser:      p,
 		Sink:        sink,
 		Metrics:     counters,
 	}
@@ -101,21 +85,107 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if cfg.MetricsAddr != "" {
+		go func() {
+			log.Printf("serving Prometheus metrics on %s/metrics", cfg.MetricsAddr)
+			if err := metrics.StartServer(ctx, cfg.MetricsAddr, counters); err != nil {
+				log.Printf("metrics server stopped: %v", err)
+			}
+		}()
+	}
+
 	reportCtx, cancelReport := context.WithCancel(ctx)
 	reportDone := counters.StartReporter(reportCtx, cfg.ReportInterval)
 
+	jobs := buildJobSource(ctx, cfg)
+
 	log.Printf(
-		"starting harvest: mode=%s queries=%d concurrency=%d proxies=%d rate/proxy=%.2f req/s",
-		cfg.Mode, len(cfg.Queries), cfg.Concurrency, proxyPool.Size(), cfg.RatePerProxyRPS,
+		"starting harvest: mode=%s queue_backend=%s concurrency=%d proxies=%d rate/proxy=%.2f req/s",
+		cfg.Mode, cfg.QueueBackend, cfg.Concurrency, proxyPool.Size(), cfg.RatePerProxyRPS,
 	)
 
-	jobs := queue.New(cfg.Queries, cfg.Concurrency*2)
 	pool.Run(ctx, jobs)
 
 	cancelReport()
 	<-reportDone
 
 	log.Println("harvest complete")
+}
+
+// buildFetcherAndParser picks the fetcher implementation and its matching
+// parser together, since a fetcher's output format (HTML vs. JSON)
+// determines which parser can read it.
+func buildFetcherAndParser(cfg config.Config, iAcceptLiveRisk *bool) (fetcher.Fetcher, worker.Parser) {
+	switch cfg.Mode {
+	case "mock":
+		f, err := fetcher.NewMockFromDir(cfg.MockFixtureDir)
+		if err != nil {
+			log.Fatalf("build mock fetcher: %v", err)
+		}
+		return f, parser.New()
+
+	case "live":
+		if !*iAcceptLiveRisk {
+			fmt.Fprintln(os.Stderr, liveModeWarning)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stderr, liveModeBanner(cfg))
+		f, err := fetcher.NewHTTPFetcher(cfg.LiveEndpoint, cfg.RequestTimeout)
+		if err != nil {
+			log.Fatalf("build http fetcher: %v", err)
+		}
+		return f, parser.New()
+
+	case "provider":
+		if cfg.ProviderBaseURL == "" {
+			log.Fatal("provider mode requires provider_base_url in config")
+		}
+		apiKey := os.Getenv(cfg.ProviderAPIKeyEnv)
+		if apiKey == "" {
+			log.Fatalf("provider mode requires the %s environment variable to be set", cfg.ProviderAPIKeyEnv)
+		}
+		f := fetcher.NewProviderFetcher(cfg.ProviderBaseURL, apiKey, cfg.ProviderEngine, cfg.RequestTimeout)
+		return f, parser.NewJSON()
+
+	default:
+		log.Fatalf("unknown mode %q (want mock|live|provider)", cfg.Mode)
+		return nil, nil // unreachable
+	}
+}
+
+// buildJobSource picks the queue backend. Redis mode optionally seeds the
+// stream from cfg.Queries first, purely so `queue_backend: redis` is
+// runnable as a local demo without a separate producer process.
+func buildJobSource(ctx context.Context, cfg config.Config) <-chan queue.Job {
+	switch cfg.QueueBackend {
+	case "", "memory":
+		return (&queue.MemorySource{Queries: cfg.Queries, Buffer: cfg.Concurrency * 2}).Jobs(ctx)
+
+	case "redis":
+		client := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
+		src := &queue.RedisStreamSource{
+			Client:   client,
+			Stream:   cfg.RedisStream,
+			Group:    cfg.RedisGroup,
+			Consumer: cfg.RedisConsumer,
+		}
+		if err := src.EnsureGroup(ctx); err != nil {
+			log.Fatalf("redis queue: %v", err)
+		}
+		if cfg.RedisSeedQueue {
+			for _, q := range cfg.Queries {
+				if err := src.PushQuery(ctx, q); err != nil {
+					log.Fatalf("redis queue: seed query %q: %v", q, err)
+				}
+			}
+			log.Printf("seeded %d queries onto redis stream %q", len(cfg.Queries), cfg.RedisStream)
+		}
+		return src.Jobs(ctx)
+
+	default:
+		log.Fatalf("unknown queue_backend %q (want memory|redis)", cfg.QueueBackend)
+		return nil // unreachable
+	}
 }
 
 const liveModeWarning = `refusing to run --mode live without -i-have-reviewed-tos
