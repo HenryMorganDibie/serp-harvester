@@ -99,10 +99,7 @@ falling behind.
 
 ## Known gaps this runbook can't cover yet
 
-- No automated alerting is wired up in this repo — the Grafana dashboard in
-  `deploy/` is for humans watching it, not paging anyone. Wiring Prometheus
-  alerting rules on top of these metrics is straightforward but not done
-  here.
+- Prometheus alerting rules are included, but Alertmanager notification routing such as Slack/PagerDuty/email is not configured.
 - No automated proxy-pool refresh/rotation-from-provider integration exists
   — the proxy list in config is static. A real deployment would source it
   from whichever proxy vendor is chosen.
