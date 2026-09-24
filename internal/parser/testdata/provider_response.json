@@ -1,0 +1,36 @@
+{
+  "_comment": "Synthetic fixture shaped like a SerpApi-compatible provider response, for testing JSONParser only. Not real Google or SerpApi output.",
+  "organic_results": [
+    {
+      "position": 1,
+      "title": "Provider Organic Result One",
+      "link": "https://example.com/provider-1",
+      "snippet": "Snippet text for the first provider organic result."
+    },
+    {
+      "position": 2,
+      "title": "Provider Organic Result Two",
+      "link": "https://example.com/provider-2",
+      "snippet": "Snippet text for the second provider organic result."
+    }
+  ],
+  "related_questions": [
+    { "question": "What is an example provider question one?" },
+    { "question": "What is an example provider question two?" }
+  ],
+  "answer_box": {
+    "title": "Provider Answer Box Title",
+    "link": "https://example.com/provider-answer",
+    "snippet": "A direct-answer snippet from the provider's answer box."
+  },
+  "ai_overview": {
+    "text_blocks": [
+      { "type": "paragraph", "snippet": "First paragraph of the provider's AI overview." },
+      { "type": "paragraph", "snippet": "Second paragraph of the provider's AI overview." }
+    ],
+    "references": [
+      { "link": "https://example.com/provider-source-a" },
+      { "link": "https://example.com/provider-source-b" }
+    ]
+  }
+}
