@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestServeHTTP_ExposesCounters(t *testing.T) {
@@ -16,8 +17,11 @@ func TestServeHTTP_ExposesCounters(t *testing.T) {
 	c.IncRetried()
 	c.IncRetried()
 	c.IncRetried()
+	c.IncAIOverviewPresent()
+	c.IncCalibrationFlagged()
+	c.IncProxyBanned()
 
-	srv := httptest.NewServer(ServeHTTP(c))
+	srv := httptest.NewServer(ServeHTTP(c, nil))
 	defer srv.Close()
 
 	resp, err := srv.Client().Get(srv.URL + "/metrics")
@@ -37,10 +41,62 @@ func TestServeHTTP_ExposesCounters(t *testing.T) {
 		"serp_harvester_failure_total 1",
 		"serp_harvester_dropped_total 1",
 		"serp_harvester_retried_total 3",
+		"serp_harvester_ai_overview_total 1",
+		"serp_harvester_parser_drift_total 1",
+		"serp_harvester_proxy_banned_total 1",
 	}
 	for _, want := range checks {
 		if !strings.Contains(text, want) {
 			t.Errorf("expected metrics output to contain %q, got:\n%s", want, text)
 		}
+	}
+
+	// Latency metrics should be absent when no recorder is supplied.
+	if strings.Contains(text, "serp_harvester_latency_p50_ms") {
+		t.Error("did not expect latency metrics when latencies is nil")
+	}
+}
+
+func TestServeHTTP_ExposesLatencyWhenRecorderSet(t *testing.T) {
+	c := &Counters{}
+	lat := NewLatencyRecorder(100)
+	for i := 1; i <= 10; i++ {
+		lat.Record(time.Duration(i*10) * time.Millisecond)
+	}
+
+	srv := httptest.NewServer(ServeHTTP(c, lat))
+	defer srv.Close()
+
+	resp, err := srv.Client().Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	text := string(body)
+
+	for _, want := range []string{"serp_harvester_latency_p50_ms", "serp_harvester_latency_p95_ms", "serp_harvester_latency_p99_ms"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("expected metrics output to contain %q, got:\n%s", want, text)
+		}
+	}
+}
+
+func TestServeHTTP_Healthz(t *testing.T) {
+	srv := httptest.NewServer(ServeHTTP(&Counters{}, nil))
+	defer srv.Close()
+
+	resp, err := srv.Client().Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("expected 200 from /healthz, got %d", resp.StatusCode)
 	}
 }

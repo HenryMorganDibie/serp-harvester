@@ -17,6 +17,21 @@ type Counters struct {
 	Failure uint64
 	Dropped uint64
 	Retried uint64
+
+	// AIOverviewPresent counts successful results whose SerpResult had a
+	// non-nil AIOverview. Compare against Success to get an AI Overview
+	// "hit rate" for the query mix being run.
+	AIOverviewPresent uint64
+
+	// CalibrationFlagged counts successful parses that still came back with
+	// a CalibrationNote (an expected block, usually organic_results,
+	// wasn't found) — the parser-drift signal from README "Handling
+	// selector drift".
+	CalibrationFlagged uint64
+
+	// ProxyBanned counts how many times a proxy transitioned into cooldown
+	// after repeated failures (see proxy.Pool.ReportResult).
+	ProxyBanned uint64
 }
 
 // IncSuccess records one successful fetch+parse.
@@ -25,24 +40,42 @@ func (c *Counters) IncSuccess() { atomic.AddUint64(&c.Success, 1) }
 // IncFailure records one failed fetch attempt.
 func (c *Counters) IncFailure() { atomic.AddUint64(&c.Failure, 1) }
 
-// IncDropped records one job that exhausted all retries.
+// IncDropped records one job that never succeeded — either it exhausted all
+// retries, or it was still in flight when the run's context was cancelled
+// (shutdown/timeout). Either way, success+dropped is a complete count of
+// every job actually attempted.
 func (c *Counters) IncDropped() { atomic.AddUint64(&c.Dropped, 1) }
 
 // IncRetried records one retry attempt.
 func (c *Counters) IncRetried() { atomic.AddUint64(&c.Retried, 1) }
 
+// IncAIOverviewPresent records one successful result whose AIOverview was
+// populated.
+func (c *Counters) IncAIOverviewPresent() { atomic.AddUint64(&c.AIOverviewPresent, 1) }
+
+// IncCalibrationFlagged records one successful parse that still came back
+// calibration-flagged (an expected block was missing).
+func (c *Counters) IncCalibrationFlagged() { atomic.AddUint64(&c.CalibrationFlagged, 1) }
+
+// IncProxyBanned records one proxy transitioning into cooldown.
+func (c *Counters) IncProxyBanned() { atomic.AddUint64(&c.ProxyBanned, 1) }
+
 // Snapshot is a point-in-time read of all counters.
 type Snapshot struct {
-	Success, Failure, Dropped, Retried uint64
+	Success, Failure, Dropped, Retried                 uint64
+	AIOverviewPresent, CalibrationFlagged, ProxyBanned uint64
 }
 
 // Snapshot reads the current counter values.
 func (c *Counters) Snapshot() Snapshot {
 	return Snapshot{
-		Success: atomic.LoadUint64(&c.Success),
-		Failure: atomic.LoadUint64(&c.Failure),
-		Dropped: atomic.LoadUint64(&c.Dropped),
-		Retried: atomic.LoadUint64(&c.Retried),
+		Success:            atomic.LoadUint64(&c.Success),
+		Failure:            atomic.LoadUint64(&c.Failure),
+		Dropped:            atomic.LoadUint64(&c.Dropped),
+		Retried:            atomic.LoadUint64(&c.Retried),
+		AIOverviewPresent:  atomic.LoadUint64(&c.AIOverviewPresent),
+		CalibrationFlagged: atomic.LoadUint64(&c.CalibrationFlagged),
+		ProxyBanned:        atomic.LoadUint64(&c.ProxyBanned),
 	}
 }
 
@@ -78,7 +111,8 @@ func (c *Counters) report(elapsed time.Duration) {
 	}
 	dailyProjection := rps * 86400
 	fmt.Printf(
-		"[metrics] elapsed=%s success=%d failure=%d retried=%d dropped=%d completed=%d req/s=%.2f projected/day=%.0f\n",
+		"[metrics] elapsed=%s success=%d failure=%d retried=%d dropped=%d completed=%d req/s=%.2f projected/day=%.0f ai_overview=%d calibration_flagged=%d proxy_banned=%d\n",
 		elapsed.Round(time.Second), s.Success, s.Failure, s.Retried, s.Dropped, total, rps, dailyProjection,
+		s.AIOverviewPresent, s.CalibrationFlagged, s.ProxyBanned,
 	)
 }
