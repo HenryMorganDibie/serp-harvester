@@ -1,0 +1,4 @@
+/bin/
+*.exe
+*.jsonl
+.DS_Store
