@@ -68,6 +68,7 @@ func main() {
 	}
 
 	proxyPool := proxy.NewPool(cfg.Proxies, cfg.ProxyBanFails, cfg.ProxyBanCooldown)
+	proxyPool.Strategy = parseProxyStrategy(cfg.ProxyStrategy)
 	limiter := ratelimit.New(cfg.RatePerProxyRPS, cfg.RateBurst)
 	counters := &metrics.Counters{}
 	latencies := metrics.NewLatencyRecorder(10000)
@@ -187,6 +188,20 @@ func buildJobSource(ctx context.Context, cfg config.Config) <-chan queue.Job {
 	default:
 		log.Fatalf("unknown queue_backend %q (want memory|redis)", cfg.QueueBackend)
 		return nil // unreachable
+	}
+}
+
+func parseProxyStrategy(s string) proxy.Strategy {
+	switch s {
+	case "", "round_robin":
+		return proxy.RoundRobin
+	case "random":
+		return proxy.Random
+	case "weighted_success_rate":
+		return proxy.WeightedSuccessRate
+	default:
+		log.Fatalf("unknown proxy_strategy %q (want round_robin|random|weighted_success_rate)", s)
+		return proxy.RoundRobin // unreachable
 	}
 }
 

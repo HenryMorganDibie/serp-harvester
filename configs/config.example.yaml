@@ -50,10 +50,14 @@ rate_per_proxy_rps: 1
 rate_burst: 1
 
 # Leave empty to run direct (no proxy). In production this list would be
-# populated from a proxy provider and typically hot-reloaded, not hardcoded.
+# populated from a proxy provider and typically hot-reloaded, not hardcoded
+# (see proxy.Pool.Reload for the runtime-reconfiguration seam).
 proxies: []
 proxy_ban_fails: 3
 proxy_ban_cooldown: 30s
+# round_robin (default), random, or weighted_success_rate (biases toward
+# proxies with a better observed success rate once the pool has history).
+proxy_strategy: round_robin
 
 live_endpoint: "https://www.google.com/search"
 request_timeout: 10s

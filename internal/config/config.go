@@ -40,6 +40,9 @@ type Config struct {
 	Proxies          []string      `yaml:"proxies"`
 	ProxyBanFails    int           `yaml:"proxy_ban_fails"`
 	ProxyBanCooldown time.Duration `yaml:"proxy_ban_cooldown"`
+	// ProxyStrategy selects proxy.Strategy: "round_robin" (default),
+	// "random", or "weighted_success_rate".
+	ProxyStrategy string `yaml:"proxy_strategy"`
 
 	LiveEndpoint   string        `yaml:"live_endpoint"`
 	RequestTimeout time.Duration `yaml:"request_timeout"`
@@ -76,6 +79,7 @@ func Default() Config {
 		RateBurst:        1,
 		ProxyBanFails:    3,
 		ProxyBanCooldown: 30 * time.Second,
+		ProxyStrategy:    "round_robin",
 		LiveEndpoint:     "https://www.google.com/search",
 		RequestTimeout:   10 * time.Second,
 		MockFixtureDir:   "internal/parser/testdata",
