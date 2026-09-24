@@ -66,7 +66,7 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, req Request) (*Response, error)
 	}
 	ua := req.UserAgent
 	if ua == "" {
-		ua = "Mozilla/5.0 (compatible; serp-harvester-sample/0.1)"
+		ua = "Mozilla/5.0 (compatible; serp-harvester/0.1)"
 	}
 	httpReq.Header.Set("User-Agent", ua)
 	httpReq.Header.Set("Accept-Language", "en-US,en;q=0.9")
