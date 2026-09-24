@@ -1,0 +1,74 @@
+# Alerting rules evaluated by Prometheus itself (visible under
+# http://localhost:9091/alerts). No Alertmanager is configured in this
+# repo's compose stack, so these become visible/pending/firing states in
+# Prometheus's UI, not pages or Slack messages — wiring Alertmanager routing
+# on top is straightforward but is a client-specific decision (which
+# on-call tool, which routing rules) not made here.
+groups:
+  - name: serp-harvester
+    rules:
+      - alert: SuccessRateDropped
+        expr: |
+          rate(serp_harvester_failure_total[5m])
+            / (rate(serp_harvester_success_total[5m]) + rate(serp_harvester_failure_total[5m]) + 0.0001)
+          > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "serp-harvester failure rate above 20% over 5m"
+          description: "See RUNBOOK.md 'Success rate drops' for the investigation checklist."
+
+      - alert: NoSuccessfulRequests
+        expr: rate(serp_harvester_success_total[10m]) == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "serp-harvester has processed zero successful requests in 10m"
+          description: "Either the queue is empty (check producer/scheduler) or every request is failing (check RUNBOOK.md)."
+
+      - alert: ParserDriftDetected
+        expr: increase(serp_harvester_parser_drift_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Parser drift detected: an expected block (usually organic_results) is missing"
+          description: "See RUNBOOK.md 'Parser drift' — selectors likely need retuning against current target markup."
+
+      - alert: ProxyBanRateHigh
+        expr: increase(serp_harvester_proxy_banned_total[15m]) > 5
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 5 proxies banned in the last 15 minutes"
+          description: "Proxy pool may be degraded or under-provisioned for the current request rate. See RUNBOOK.md."
+
+      - alert: JobsBeingDropped
+        expr: increase(serp_harvester_dropped_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Jobs are being dropped after exhausting retries"
+          description: "Every dropped job is lost work — check RUNBOOK.md 'Success rate drops' and proxy/provider health immediately."
+
+      - alert: LatencyP99High
+        expr: serp_harvester_latency_p99_ms > 5000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p99 fetch latency above 5s for 5m"
+          description: "Check target/provider response times and request_timeout configuration."
+
+      - alert: MetricsEndpointDown
+        expr: up{job="serp-harvester"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus cannot scrape serp-harvester's /metrics endpoint"
+          description: "The harvester process may be down. See RUNBOOK.md 'Metrics endpoint itself is unreachable'."
