@@ -50,6 +50,7 @@ func NewMockFromDir(dir string) (*Mock, error) {
 // Fetch returns the next fixture in rotation, simulating realistic latency.
 func (m *Mock) Fetch(ctx context.Context, req Request) (*Response, error) {
 	n := atomic.AddUint64(&m.counter, 1)
+	start := time.Now()
 
 	// Simulate network latency so the metrics/backoff paths behave
 	// realistically in the demo.
@@ -58,6 +59,7 @@ func (m *Mock) Fetch(ctx context.Context, req Request) (*Response, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+	latency := time.Since(start)
 
 	if m.FailEvery > 0 && n%m.FailEvery == 0 {
 		return nil, fmt.Errorf("mock fetcher: simulated failure for %q", req.Query)
@@ -67,6 +69,6 @@ func (m *Mock) Fetch(ctx context.Context, req Request) (*Response, error) {
 	return &Response{
 		StatusCode: 200,
 		Body:       body,
-		Latency:    20 * time.Millisecond,
+		Latency:    latency,
 	}, nil
 }
