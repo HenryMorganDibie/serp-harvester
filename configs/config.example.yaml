@@ -1,0 +1,41 @@
+# serp-harvester example configuration.
+#
+# Copy this file, tweak it, and pass -config path/to/your.yaml.
+
+# mode: "mock" runs entirely offline against the bundled fixture HTML in
+# internal/parser/testdata — safe to run anywhere, no network calls.
+# "live" issues real HTTP requests to live_endpoint and requires passing
+# -i-have-reviewed-tos on the command line.
+mode: mock
+
+queries:
+  - "best noise cancelling headphones 2026"
+  - "how does a heat pump work"
+  - "golang worker pool pattern"
+  - "google ai overview scraping"
+  - "web scraping legal considerations"
+
+# Worker pool sizing. concurrency=8 with rate_per_proxy_rps=1 caps this
+# demo's steady-state to ~8 req/s regardless of proxy count, deliberately
+# low for a public sample. Scaling to 10M+/day (~116 sustained req/s) is a
+# matter of concurrency, proxy pool size, and rate_per_proxy_rps — not a
+# different architecture.
+concurrency: 8
+max_retries: 2
+
+rate_per_proxy_rps: 1
+rate_burst: 1
+
+# Leave empty to run direct (no proxy). In production this list would be
+# populated from a proxy provider and typically hot-reloaded, not hardcoded.
+proxies: []
+proxy_ban_fails: 3
+proxy_ban_cooldown: 30s
+
+live_endpoint: "https://www.google.com/search"
+request_timeout: 10s
+mock_fixture_dir: "internal/parser/testdata"
+
+# "-" means stdout. Set a file path to write JSON-Lines to disk instead.
+output_path: "-"
+report_interval: 2s
