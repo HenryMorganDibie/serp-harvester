@@ -61,11 +61,13 @@ operation with a track record. What exists instead:
   see [README "Load testing"](README.md#load-testing) for the concurrency
   sweep table with real measured numbers, currently up to ~15,000 req/s at
   concurrency 800 — well past the ~116 req/s that 10M/day requires.
-- **Soak test**: a sustained run tracking memory, goroutine count, and
-  throughput consistency over time — see [README "Load testing"](README.md#load-testing)
-  for the actual duration run and outcome (a 90-minute run was in progress
-  as this document was last updated; check README for the completed result
-  rather than this file, which isn't updated live).
+- **Soak test**: a completed 90-minute sustained run at concurrency 200 —
+  20.76 million requests processed, throughput steady at ~3,700-4,000 req/s
+  the entire run with no degradation, memory stable (3-7MB, no leak),
+  goroutine count exactly flat at 203 across all 45 samples, and zero jobs
+  dropped. Full numbers and methodology in
+  [README "Load testing"](README.md#load-testing) — reproducible via
+  `go run ./cmd/loadtest -duration 90m -sample-interval 2m -concurrency 200`.
 - **Production history**: none to report. Once this runs against real
   traffic (via the provider path), this section gets updated with actual
   dates, actual daily volume, and actual success rates — not before.

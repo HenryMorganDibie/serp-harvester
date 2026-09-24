@@ -365,9 +365,32 @@ the 30s mark are jobs in flight exactly at the shutdown cutoff hitting
 context cancellation, not a fetch failure — see `PRODUCTION_READINESS.md`
 §5 for the accounting fix this run surfaced.)
 
-**A longer run (90 minutes, concurrency 200) was started alongside building
-this feature; real results — or an honest note that it's still running —
-belong here once it completes, not invented ahead of time.**
+**Full 90-minute run, completed:**
+
+```text
+actual elapsed: 1h30m0s (requested: 1h30m0s)
+total success=20756754 failure=186 dropped=0 retried=186
+ai_overview=6918916 calibration_flagged=6918920 proxy_banned=0
+latency (last 200000 samples): min=20ms p50=50ms p95=77ms p99=79ms max=200ms
+average throughput: 3844 req/s => 332098180/day if sustained
+final memory: alloc=5MB sys=61MB goroutines=1
+```
+
+Concurrency 200, sampled every 2 minutes for the full run: throughput held
+at 3,700-4,000 req/s the entire 90 minutes with no degradation, `alloc`
+oscillated between 3-7MB the whole time with no upward trend (no memory
+leak), and goroutine count stayed exactly at 203 across all 45 samples
+before winding down to 1 at shutdown (no goroutine leak). `dropped=0` across
+20.76 million requests processed — the 186 `failure`/`retried` count is
+first-attempt failures exactly at the process's hard 90-minute cutoff that
+were then retried successfully, not lost work; nothing was dropped.
+`ai_overview` and `calibration_flagged` landing within 4 of each other
+(6,918,916 vs. 6,918,920) is the expected internal consistency check given
+the 3-fixture rotation the mock fetcher cycles through.
+
+This is still orchestration-only evidence (mock fetcher, zero network), not
+a live-throughput claim — but it's real, sustained, and reproducible:
+`go run ./cmd/loadtest -duration 90m -sample-interval 2m -concurrency 200`.
 
 ## Live mode
 
