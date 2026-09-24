@@ -7,7 +7,12 @@ instead of duplicating it — this document is the index, not a second copy.
 ## 1. Architecture
 
 Queue → worker pool → proxy pool → rate limiter → fetcher → parser → sink,
-every stage an interface or a small struct. See [README "Architecture"](README.md#architecture).
+every stage an interface or a small struct. Job submission (`cmd/api`) and
+the worker/consumer (`cmd/harvester`) are separate binaries that only share
+the queue: the API only ever calls `queue.Producer.PushJob`, never `Fetcher`
+or `Parser`, so acquisition logic can't leak into the submission layer. See
+[README "Architecture"](README.md#architecture) and
+[README "Job/API layer"](README.md#jobapi-layer).
 
 ## 2. Deployment
 
@@ -155,3 +160,20 @@ or headless rendering built (a deliberate scope boundary, not an oversight);
 the provider fetch path is the one built for real volume; and no number in
 this repository claims a production operating history that doesn't exist —
 see the "Production history" note in the README's top summary.
+
+## 18. Job submission API
+
+`cmd/api` (`POST /jobs`, `GET /jobs/{run_id}`) — see
+[README "Job/API layer"](README.md#jobapi-layer) for the full description
+and the real end-to-end verification (real Redis + real Postgres, a job
+submitted via curl, consumed by a separate harvester process, and confirmed
+by querying Postgres directly). Handler logic is unit-tested in CI
+(`internal/api/server_test.go`, 8 tests) with a fake producer; the
+real-infrastructure run was a one-time manual confirmation against local
+Docker containers, not something CI re-verifies on every commit. Not yet
+built: authentication/authorization on the API endpoints (currently open —
+fine behind an internal network or a reverse proxy that handles auth, not
+fine exposed directly to the internet), and the in-memory `submitted` count
+resets if the API process restarts (a run submitted before a restart still
+shows `submitted_known: false` after one, even though its results are still
+in Postgres and countable).

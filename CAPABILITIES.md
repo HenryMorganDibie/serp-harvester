@@ -92,6 +92,15 @@ to the SERP data vendor you pick — the same shape as calling any other paid
 API from your own backend, not a hosted scraping platform sitting in front
 of your data.
 
+Job submission is also self-hosted: `cmd/api` exposes `POST /jobs` and
+`GET /jobs/{run_id}` over your own infrastructure — your team (or another
+system of yours) submits query batches over HTTP instead of editing a config
+file, and the API server only ever enqueues work onto the same Redis Stream
+your workers consume; it never fetches or parses anything itself. Verified
+end-to-end against real Redis and Postgres containers, not just unit tests:
+a job posted via curl was consumed by a separate harvester process and the
+resulting rows confirmed directly in Postgres.
+
 ## What would your deployment timeline and indicative setup/monthly support costs be?
 
 Rough shape, to be refined once scope (query mix, target locales, required

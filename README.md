@@ -23,6 +23,9 @@ proxies, no network access required.
   infrastructure. No Apify dependency.
 - **Scaling**: Redis Streams distributed queue, horizontal worker scaling,
   per-proxy rate limiting, retry/backoff, Prometheus metrics.
+- **Job submission**: an HTTP API (`cmd/api`) for `POST /jobs` +
+  `GET /jobs/{run_id}`, as a pure queue producer — see
+  [Job/API layer](#jobapi-layer).
 - **Measured capacity**: see [Load testing](#load-testing) below for actual
   numbers (orchestration throughput and the latest soak test), not
   projections.
@@ -155,6 +158,43 @@ Redis hands each message to exactly one of them, re-delivering to another
 consumer if one dies mid-job without acknowledging — see
 `internal/queue/redis_stream_test.go` (run against an in-memory `miniredis`,
 no real Redis server needed for `go test`).
+
+## Job/API layer
+
+`cmd/api` submits work over HTTP instead of a fixed query list in a config
+file — `POST /jobs` enqueues one query per item onto the same Redis Stream
+`cmd/harvester` consumes from, and `GET /jobs/{run_id}` reports progress.
+
+```bash
+curl -X POST localhost:8080/jobs -d '{"queries": ["best laptops 2026"], "country": "US", "language": "en", "device": "mobile"}'
+# {"run_id": "run-19ef9a1e45ab0f9d", "queries_accepted": 1}
+
+curl localhost:8080/jobs/run-19ef9a1e45ab0f9d
+# {"run_id": "...", "submitted": 1, "completed": 1, "completed_known": true, "submitted_known": true}
+```
+
+This is strictly a **producer**: `internal/api.Server` depends only on
+`queue.Producer` (`PushJob`) — it never imports `Fetcher` or `Parser`. That
+boundary is deliberate (see "Architecture" above): the job-submission layer
+can't accidentally grow into doing acquisition work itself, which is what
+keeps direct-HTTP vs. provider swappable underneath it without the API
+knowing or caring. `completed` comes from `store.PostgresSink.CountByRunID`
+when `sink_backend: postgres` is configured on the harvester side and the
+API is pointed at the same database; without Postgres, completion is
+honestly reported as unknown (`completed: -1, completed_known: false`)
+rather than a fabricated number.
+
+**Tested end-to-end against real infrastructure, not just unit tests:** a
+real Redis and a real Postgres were both stood up, `cmd/api` and
+`cmd/harvester` run as separate processes against them, a job posted via
+curl, and the result verified by querying Postgres directly — `run_id`,
+`locale` (`US-en`), and `device` (`mobile`) all landed correctly on the row
+the harvester wrote after consuming the job the API pushed. `internal/api/server_test.go`
+covers the handler logic in isolation (8 tests: enqueue-per-query, producer
+failure, unknown run ID, no-counter-configured, etc.) with a fake producer,
+so CI doesn't need real infrastructure to verify the logic — the real-infra
+run was a one-time manual confirmation against local Docker containers, not
+something re-run automatically on every commit today.
 
 ## Proxy management
 
@@ -506,10 +546,12 @@ number requires a different architecture from what's here — it requires:
 ## Layout
 
 ```
-cmd/harvester/          CLI entrypoint and wiring
+cmd/harvester/          CLI entrypoint and wiring (the worker/consumer side)
+cmd/api/                Job-submission HTTP layer: POST /jobs, GET /jobs/:run_id (the producer side)
 cmd/loadtest/           Offline orchestration measurement: fixed-count, concurrency sweep, and soak-test modes
 internal/model/         SerpResult and its sub-structures (incl. run_id/locale/device, raw body on drift)
-internal/queue/         Job sources: in-memory, and Redis Streams for multi-process/host scaling
+internal/api/           HTTP handlers for cmd/api — depends only on queue.Producer, never Fetcher/Parser
+internal/queue/         Job sources/producer: in-memory, and Redis Streams for multi-process/host scaling
 internal/proxy/         Proxy pool: health tracking, dynamic reload, 3 rotation strategies
 internal/ratelimit/     Per-key token-bucket rate limiter
 internal/fetcher/       Fetcher interface + Mock, direct HTTP, and third-party provider implementations,
