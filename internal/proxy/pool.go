@@ -86,19 +86,25 @@ func (pl *Pool) Next() (*Proxy, error) {
 }
 
 // ReportResult records whether the last request through p succeeded, banning
-// p for banCooldown once it has failed banThreshold times in a row.
-func (pl *Pool) ReportResult(p *Proxy, err error) {
+// p for banCooldown once it has failed banThreshold times in a row. It
+// returns true exactly when this call is what pushed p into a new ban (not
+// on every failure while already banned, and not on repeat calls before the
+// threshold is reached), so callers can count ban *events* rather than
+// every failure.
+func (pl *Pool) ReportResult(p *Proxy, err error) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if err == nil {
 		p.consecutiveFails = 0
-		return
+		return false
 	}
 	p.consecutiveFails++
-	if p.consecutiveFails >= pl.banThreshold {
+	if p.consecutiveFails == pl.banThreshold {
 		p.bannedUntil = time.Now().Add(pl.banCooldown)
+		return true
 	}
+	return false
 }
 
 // Size returns how many proxies are configured (at least 1).
