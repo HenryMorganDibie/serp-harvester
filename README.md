@@ -263,7 +263,8 @@ postgres_dsn_env: POSTGRES_DSN   # read from the environment, never from this fi
 ```
 
 ```bash
-export POSTGRES_DSN="postgres://user:pass@host:5432/dbname?sslmode=disable"
+export POSTGRES_DSN="postgres://user@host:5432/dbname?sslmode=disable"
+export PGPASSWORD="..."   # pgx reads the password from here; keep it out of the DSN
 go run ./cmd/harvester -config your-config.yaml
 ```
 
