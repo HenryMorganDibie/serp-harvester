@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<!-- Synthetic fixture: see full.html for the disclaimer. This one renames
+     every class the parser looks for (".result-card" instead of
+     ".organic-result", etc.) to simulate a markup change the current
+     selectors miss entirely, exercising the calibration/raw-HTML-capture
+     path instead of silently returning an empty result. -->
+<html>
+<body>
+  <div class="layout-shift-v2">
+    <div class="result-card" data-position="1">
+      <a class="result-link" href="https://example.com/shifted-1">
+        <span class="result-heading">Result Under Changed Layout</span>
+      </a>
+      <div class="result-desc">This block is no longer under the selectors the parser expects.</div>
+    </div>
+  </div>
+</body>
+</html>

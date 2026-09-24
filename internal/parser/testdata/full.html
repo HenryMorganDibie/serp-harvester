@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<!--
+  Synthetic fixture for testing/demo purposes only.
+
+  This is NOT captured Google markup. It is a simplified, generic SERP-like
+  layout with descriptive class names of our own choosing, used to exercise
+  the parser's extraction logic and tests without redistributing any real
+  Google page structure or content. See README for why: Google's actual DOM
+  is obfuscated, changes frequently, and adapting selectors to it is scoped
+  as day-one work in a real engagement, not something this public sample
+  should reverse-engineer and ship.
+-->
+<html>
+<body>
+  <div class="serp-ai-overview" data-block="ai-overview">
+    <div class="ai-overview-text">
+      Example generated summary text describing the query topic at a high level,
+      synthesized from several sources.
+    </div>
+    <ul class="ai-overview-sources">
+      <li><a href="https://example.com/source-a">Source A</a></li>
+      <li><a href="https://example.com/source-b">Source B</a></li>
+    </ul>
+  </div>
+
+  <div class="serp-featured-snippet" data-block="featured-snippet">
+    <a class="fs-link" href="https://example.com/featured">
+      <span class="fs-title">Featured Result Title</span>
+    </a>
+    <div class="fs-text">A direct-answer snippet pulled from the featured page.</div>
+  </div>
+
+  <div class="serp-people-also-ask" data-block="paa">
+    <div class="paa-question">What is an example question one?</div>
+    <div class="paa-question">What is an example question two?</div>
+    <div class="paa-question">What is an example question three?</div>
+  </div>
+
+  <div class="serp-organic-results">
+    <div class="organic-result" data-position="1">
+      <a class="organic-link" href="https://example.com/result-1">
+        <span class="organic-title">First Organic Result</span>
+      </a>
+      <div class="organic-snippet">Snippet text for the first organic result.</div>
+    </div>
+    <div class="organic-result" data-position="2">
+      <a class="organic-link" href="https://example.com/result-2">
+        <span class="organic-title">Second Organic Result</span>
+      </a>
+      <div class="organic-snippet">Snippet text for the second organic result.</div>
+    </div>
+    <div class="organic-result" data-position="3">
+      <a class="organic-link" href="https://example.com/result-3">
+        <span class="organic-title">Third Organic Result</span>
+      </a>
+      <div class="organic-snippet">Snippet text for the third organic result.</div>
+    </div>
+  </div>
+</body>
+</html>
