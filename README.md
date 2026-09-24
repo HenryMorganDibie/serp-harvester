@@ -105,11 +105,25 @@ issues actual requests. It deliberately:
   otherwise, and prints why),
 - defaults to a conservative rate (`rate_per_proxy_rps: 1` in the example
   config),
+- carries a cookie jar so a consent decision persists across requests within
+  a run (`internal/fetcher/http.go`), the same way a browser remembers you
+  clicked "I agree",
 - does **not** implement headless rendering, CAPTCHA solving, or browser
   fingerprint spoofing.
 
 That last point is a deliberate scope boundary, not an oversight — see
 below.
+
+**Tested result:** even with the cookie jar and a pre-seeded consent cookie,
+a live request against `https://www.google.com/search` from this
+environment still came back as the "Before you continue to Google Search"
+consent interstitial, not a results page — confirmed by inspecting the raw
+response (status 200, page title matches the interstitial, no results
+markup present). That's reported here rather than glossed over: getting a
+plain, undisguised HTTP client past Google's consent/session flow reliably
+is already nontrivial, before CAPTCHAs, rate limiting, or volume enter the
+picture at all. It's honest evidence for exactly the scoping conversation in
+[Honest limitations](#honest-limitations) below.
 
 ## Honest limitations
 

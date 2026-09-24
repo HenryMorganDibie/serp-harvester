@@ -63,7 +63,10 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stderr, liveModeBanner(cfg))
-		f = fetcher.NewHTTPFetcher(cfg.LiveEndpoint, cfg.RequestTimeout)
+		f, err = fetcher.NewHTTPFetcher(cfg.LiveEndpoint, cfg.RequestTimeout)
+		if err != nil {
+			log.Fatalf("build http fetcher: %v", err)
+		}
 	default:
 		log.Fatalf("unknown mode %q (want mock|live)", cfg.Mode)
 	}
