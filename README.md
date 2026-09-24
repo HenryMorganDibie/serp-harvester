@@ -12,6 +12,30 @@ request-volume SLA is measured in.
 It runs end to end, offline, with `go run ./cmd/harvester` — no API keys, no
 proxies, no network access required.
 
+## At a glance
+
+- **What it does**: Google SERP collection (organic, featured snippet,
+  "people also ask", AI Overview including its page-token follow-up),
+  direct-to-Google or via a third-party provider, behind one interface.
+- **Deployment**: self-hosted. `docker compose -f deploy/docker-compose.yml up -d`
+  runs the full stack (harvester + Redis + Prometheus + Grafana) on your own
+  infrastructure. No Apify dependency.
+- **Scaling**: Redis Streams distributed queue, horizontal worker scaling,
+  per-proxy rate limiting, retry/backoff, Prometheus metrics.
+- **Measured capacity**: see [Load testing](#load-testing) below for actual
+  numbers (orchestration throughput and the latest soak test), not
+  projections.
+- **Production history**: none yet — this is a new build. See
+  [CAPABILITIES.md](CAPABILITIES.md) for the direct, no-spin answer to that
+  question and the other four this project needs to answer.
+- **Limitations**: documented in full, not glossed over — see
+  [Honest limitations](#honest-limitations).
+
+Full document index: [CAPABILITIES.md](CAPABILITIES.md) (answers to the five
+questions this was built for) · [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)
+(architecture-to-operations checklist) · [RUNBOOK.md](RUNBOOK.md) (what to
+do when a metric looks wrong) · [deploy/](deploy/) (Docker Compose / systemd).
+
 ## Why this exists
 
 This is the engineering foundation for a Google SERP / AI Overviews
@@ -207,26 +231,61 @@ queue → worker pool → proxy pool → rate limiter → mock fetch → parse �
 discard sink — at high concurrency, entirely offline. It answers one
 specific question: does this codebase's own plumbing bottleneck before a
 proxy budget or target site would? It does **not** measure real network
-throughput against Google or any other live target.
+throughput against Google or any other live target. Three modes:
 
 ```bash
-go run ./cmd/loadtest -n 100000 -concurrency 800
+go run ./cmd/loadtest -n 100000 -concurrency 800            # fixed-count benchmark
+go run ./cmd/loadtest -sweep 1,4,8,16,50,200,800 -n 3000     # concurrency sweep, one table
+go run ./cmd/loadtest -duration 90m -sample-interval 2m      # soak test
 ```
 
-Real numbers measured on the development machine this was built on
-(mock fetcher, simulated 20-80ms latency per fetch, zero network calls):
+### Concurrency sweep
 
-| Concurrency | Queries | Wall time | Throughput | Failures/Drops |
-|-------------|---------|-----------|------------|----------------|
-| 50          | 20,000  | 20.2s     | ~990 req/s | 0 / 0          |
-| 200         | 50,000  | 12.7s     | ~3,945 req/s | 0 / 0        |
-| 800         | 100,000 | 6.5s      | ~15,290 req/s | 0 / 0       |
+Real numbers measured on the development machine this was built on (mock
+fetcher, simulated 20-80ms latency per fetch, zero network calls). The
+first three rows are from `-sweep`; the last three are earlier fixed-count
+runs from before per-request latency tracking existed, kept here rather
+than re-run purely for a prettier table — the `req/s` and `0 drops` figures
+are directly comparable either way, only the latency columns differ:
+
+| Concurrency | Queries | Wall time | Throughput | p50 | p95 | p99 | Failures/Drops |
+|-------------|---------|-----------|------------|-----|-----|-----|----------------|
+| 1           | 2,000   | 1m39.7s   | ~20 req/s  | 49ms | 78ms | 80ms | 0 / 0 |
+| 4           | 2,000   | 25.9s     | ~77 req/s  | 52ms | 78ms | 90ms | 0 / 0 |
+| 8           | 2,000   | 12.6s     | ~159 req/s | 50ms | 78ms | 80ms | 0 / 0 |
+| 50          | 20,000  | 20.2s     | ~990 req/s | n/a (pre-latency-tracking run) | | | 0 / 0 |
+| 200         | 50,000  | 12.7s     | ~3,945 req/s | n/a | | | 0 / 0 |
+| 800         | 100,000 | 6.5s      | ~15,290 req/s | n/a | | | 0 / 0 |
 
 Throughput scales roughly linearly with concurrency here because the
 bottleneck is the mock fetcher's simulated per-request latency, not
 pipeline overhead — exactly the property you want: the orchestration layer
 gets out of the way, and real-world throughput becomes a function of proxy
-count and target-site latency, not this codebase.
+count and target-site latency, not this codebase. Note concurrency=8
+(~159 req/s) already clears the ~116 req/s that 10M/day works out to, in
+this orchestration-only benchmark.
+
+### Soak test
+
+A sustained run tracks throughput, latency percentiles, memory, and
+goroutine count over time via `-duration`, so stability can be checked
+directly rather than assumed from a short benchmark:
+
+```text
+[soak 10s] success=19486 failure=0 dropped=0 interval_rps=1949 p50=51ms p95=77ms p99=81ms alloc=2MB goroutines=103
+[soak 20s] success=39019 failure=0 dropped=0 interval_rps=1953 p50=50ms p95=78ms p99=81ms alloc=2MB goroutines=103
+[soak 30s] success=58691 failure=97 dropped=0 interval_rps=1967 p50=51ms p95=77ms p99=80ms alloc=3MB goroutines=100
+```
+
+(30-second smoke test shown above, concurrency=100 — stable throughput,
+stable memory, stable goroutine count across samples; the 97 failures at
+the 30s mark are jobs in flight exactly at the shutdown cutoff hitting
+context cancellation, not a fetch failure — see `PRODUCTION_READINESS.md`
+§5 for the accounting fix this run surfaced.)
+
+**A longer run (90 minutes, concurrency 200) was started alongside building
+this feature; real results — or an honest note that it's still running —
+belong here once it completes, not invented ahead of time.**
 
 ## Live mode
 
