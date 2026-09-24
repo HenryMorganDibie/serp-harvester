@@ -10,6 +10,17 @@ import "context"
 // Job is a single unit of work: one query to harvest.
 type Job struct {
 	Query string
+
+	// RunID groups jobs submitted together (e.g. one POST /jobs call, or one
+	// scheduled harvest tick), so a downstream sink can report per-run
+	// results. Optional: empty for ad hoc single-query runs.
+	RunID string
+	// Locale is a target market/language hint (e.g. "US-en"), passed
+	// through to the fetcher (SerpApi-style providers use gl/hl params) and
+	// stamped onto the resulting SerpResult. Optional.
+	Locale string
+	// Device is a target device hint (e.g. "desktop", "mobile"). Optional.
+	Device string
 }
 
 // Source produces a stream of jobs. Jobs closes its returned channel once

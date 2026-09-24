@@ -16,6 +16,15 @@ type Request struct {
 	Query     string
 	UserAgent string
 	ProxyURL  string // empty = direct connection
+
+	// Country and Language are optional locale hints (e.g. "US", "en").
+	// ProviderFetcher passes them through as gl/hl params when set;
+	// HTTPFetcher passes Language through as hl. Empty means "provider/
+	// target default."
+	Country  string
+	Language string
+	// Device is an optional device hint (e.g. "desktop", "mobile", "tablet").
+	Device string
 }
 
 // Response is the raw result of a fetch.

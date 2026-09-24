@@ -64,6 +64,40 @@ func TestRedisStreamSource_PushAndConsume(t *testing.T) {
 	}
 }
 
+func TestRedisStreamSource_PushJobCarriesMetadata(t *testing.T) {
+	client := newTestRedis(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	src := &RedisStreamSource{
+		Client:   client,
+		Stream:   "serp-queries",
+		Group:    "harvesters",
+		Consumer: "worker-1",
+		BlockFor: 200 * time.Millisecond,
+	}
+	if err := src.EnsureGroup(ctx); err != nil {
+		t.Fatalf("EnsureGroup: %v", err)
+	}
+
+	want := Job{Query: "best laptops 2026", RunID: "run-abc", Locale: "US-en", Device: "mobile"}
+	if err := src.PushJob(ctx, want); err != nil {
+		t.Fatalf("PushJob: %v", err)
+	}
+
+	select {
+	case got, ok := <-src.Jobs(ctx):
+		if !ok {
+			t.Fatal("jobs channel closed before delivering the pushed job")
+		}
+		if got != want {
+			t.Errorf("got %+v, want %+v", got, want)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the pushed job")
+	}
+}
+
 func TestRedisStreamSource_EnsureGroupIdempotent(t *testing.T) {
 	client := newTestRedis(t)
 	ctx := context.Background()

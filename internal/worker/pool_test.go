@@ -157,3 +157,66 @@ func fetcherFixture(t *testing.T) ([]byte, error) {
 	t.Helper()
 	return []byte(`<html><body><div class="serp-organic-results"><div class="organic-result" data-position="1"><a class="organic-link" href="https://example.com/1"><span class="organic-title">t</span></a><div class="organic-snippet">s</div></div></div></body></html>`), nil
 }
+
+// staticFetcher always returns the same body, regardless of query.
+type staticFetcher struct{ body []byte }
+
+func (f *staticFetcher) Fetch(ctx context.Context, req fetcher.Request) (*fetcher.Response, error) {
+	return &fetcher.Response{StatusCode: 200, Body: f.body}, nil
+}
+
+// capturingSink stores every result written to it.
+type capturingSink struct {
+	mu      sync.Mutex
+	results []*model.SerpResult
+}
+
+func (s *capturingSink) Write(r *model.SerpResult) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.results = append(s.results, r)
+	return nil
+}
+
+func TestPool_ThreadsRunMetadataAndCapturesRawBodyOnDrift(t *testing.T) {
+	// This fixture has no .serp-organic-results block, so the parser flags
+	// Calibration — exercising the "archive raw body on drift" path.
+	driftedBody := []byte(`<html><body><div class="layout-shift-v2"><div class="result-card"></div></div></body></html>`)
+
+	sink := &capturingSink{}
+	counters := &metrics.Counters{}
+	pool := &Pool{
+		Concurrency: 1,
+		MaxRetries:  0,
+		Fetcher:     &staticFetcher{body: driftedBody},
+		ProxyPool:   proxy.NewPool(nil, 1000, time.Hour),
+		Limiter:     ratelimit.New(100000, 1000),
+		Parser:      parser.New(),
+		Sink:        sink,
+		Metrics:     counters,
+	}
+
+	job := queue.Job{Query: "best laptops 2026", RunID: "run-xyz", Locale: "US-en", Device: "mobile"}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	jobs := make(chan queue.Job, 1)
+	jobs <- job
+	close(jobs)
+	pool.Run(ctx, jobs)
+
+	if len(sink.results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(sink.results))
+	}
+	r := sink.results[0]
+
+	if r.RunID != "run-xyz" || r.Locale != "US-en" || r.Device != "mobile" {
+		t.Errorf("expected run metadata to be threaded through, got RunID=%q Locale=%q Device=%q", r.RunID, r.Locale, r.Device)
+	}
+	if r.Calibration == nil {
+		t.Fatal("expected this drifted fixture to be calibration-flagged")
+	}
+	if len(r.RawBody) == 0 {
+		t.Error("expected RawBody to be captured when Calibration is set")
+	}
+}

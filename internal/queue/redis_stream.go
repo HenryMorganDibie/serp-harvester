@@ -41,14 +41,26 @@ func (s *RedisStreamSource) EnsureGroup(ctx context.Context) error {
 	return nil
 }
 
-// PushQuery adds one query to the stream.
+// PushQuery adds one query to the stream with no run/locale/device metadata.
 func (s *RedisStreamSource) PushQuery(ctx context.Context, query string) error {
+	return s.PushJob(ctx, Job{Query: query})
+}
+
+// PushJob adds one job to the stream, carrying RunID/Locale/Device through
+// so a consumer's Jobs() reconstructs the same Job. This is what the job/API
+// layer and scheduler use instead of PushQuery.
+func (s *RedisStreamSource) PushJob(ctx context.Context, job Job) error {
 	err := s.Client.XAdd(ctx, &redis.XAddArgs{
 		Stream: s.Stream,
-		Values: map[string]interface{}{"query": query},
+		Values: map[string]interface{}{
+			"query":  job.Query,
+			"run_id": job.RunID,
+			"locale": job.Locale,
+			"device": job.Device,
+		},
 	}).Err()
 	if err != nil {
-		return fmt.Errorf("queue: push query: %w", err)
+		return fmt.Errorf("queue: push job: %w", err)
 	}
 	return nil
 }
@@ -94,8 +106,12 @@ func (s *RedisStreamSource) Jobs(ctx context.Context) <-chan Job {
 			for _, stream := range streams {
 				for _, msg := range stream.Messages {
 					query, _ := msg.Values["query"].(string)
+					runID, _ := msg.Values["run_id"].(string)
+					locale, _ := msg.Values["locale"].(string)
+					device, _ := msg.Values["device"].(string)
+					job := Job{Query: query, RunID: runID, Locale: locale, Device: device}
 					select {
-					case ch <- Job{Query: query}:
+					case ch <- job:
 						s.Client.XAck(ctx, s.Stream, s.Group, msg.ID)
 					case <-ctx.Done():
 						return

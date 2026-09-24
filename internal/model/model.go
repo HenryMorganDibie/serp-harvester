@@ -6,6 +6,9 @@ import "time"
 // SerpResult is the structured output produced for one query.
 type SerpResult struct {
 	Query           string           `json:"query"`
+	RunID           string           `json:"run_id,omitempty"`
+	Locale          string           `json:"locale,omitempty"`
+	Device          string           `json:"device,omitempty"`
 	FetchedAt       time.Time        `json:"fetched_at"`
 	LatencyMS       int64            `json:"latency_ms"`
 	ProxyUsed       string           `json:"proxy_used,omitempty"`
@@ -19,6 +22,12 @@ type SerpResult struct {
 	// markup frequently) should route these results to a review queue rather
 	// than silently returning partial/empty data.
 	Calibration *CalibrationNote `json:"calibration,omitempty"`
+
+	// RawBody is populated only when Calibration is set — the raw, pre-parse
+	// response body, for whoever is retuning selectors. Left nil otherwise
+	// to keep normal results small; JSONLSink writes it as-is (base64 in
+	// JSON), PostgresSink stores it in a dedicated column.
+	RawBody []byte `json:"raw_body,omitempty"`
 }
 
 // OrganicResult is a single organic listing.

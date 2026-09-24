@@ -49,6 +49,15 @@ func (f *ProviderFetcher) Fetch(ctx context.Context, req Request) (*Response, er
 	q := url.Values{}
 	q.Set("engine", f.Engine)
 	q.Set("q", req.Query)
+	if req.Country != "" {
+		q.Set("gl", req.Country) // SerpApi-documented country param
+	}
+	if req.Language != "" {
+		q.Set("hl", req.Language) // SerpApi-documented language param
+	}
+	if req.Device != "" {
+		q.Set("device", req.Device) // SerpApi-documented device param
+	}
 	body, status, headers, err := f.doGet(ctx, req.ProxyURL, q)
 	if err != nil {
 		return nil, fmt.Errorf("provider fetcher: request failed: %w", err)

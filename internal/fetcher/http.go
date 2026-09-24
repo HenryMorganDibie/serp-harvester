@@ -58,6 +58,12 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, req Request) (*Response, error)
 
 	q := url.Values{}
 	q.Set("q", req.Query)
+	if req.Country != "" {
+		q.Set("gl", req.Country)
+	}
+	if req.Language != "" {
+		q.Set("hl", req.Language)
+	}
 	u := f.Endpoint + "?" + q.Encode()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)

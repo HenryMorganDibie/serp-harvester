@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/HenryMorganDibie/serp-harvester/internal/fetcher"
@@ -124,6 +125,9 @@ func (p *Pool) process(ctx context.Context, job queue.Job) {
 			Query:     job.Query,
 			UserAgent: userAgents[rand.Intn(len(userAgents))],
 			ProxyURL:  px.URL,
+			Language:  localeLanguage(job.Locale),
+			Country:   localeCountry(job.Locale),
+			Device:    job.Device,
 		}
 
 		resp, err := p.Fetcher.Fetch(ctx, req)
@@ -152,6 +156,16 @@ func (p *Pool) process(ctx context.Context, job queue.Job) {
 		result.LatencyMS = resp.Latency.Milliseconds()
 		result.ProxyUsed = px.Key()
 		result.FetchedAt = time.Now().UTC()
+		result.RunID = job.RunID
+		result.Locale = job.Locale
+		result.Device = job.Device
+		if result.Calibration != nil {
+			// Archive the raw pre-parse body only on drift — see README
+			// "Handling selector drift": this is what a selector-retuning
+			// pass would want to inspect, and keeping it off normal results
+			// keeps JSONLSink output small at volume.
+			result.RawBody = resp.Body
+		}
 
 		if err := p.Sink.Write(result); err != nil {
 			log.Printf("worker: sink write failed for %q: %v", job.Query, err)
@@ -168,6 +182,26 @@ func (p *Pool) process(ctx context.Context, job queue.Job) {
 
 	p.Metrics.IncDropped()
 	log.Printf("worker: job %q dropped after %d attempts: %v", job.Query, p.MaxRetries+1, lastErr)
+}
+
+// localeLanguage and localeCountry split a "COUNTRY-language" locale hint
+// (e.g. "US-en") into its two parts. An empty or malformed locale yields
+// empty strings for both, which fetchers treat as "use the target/provider
+// default."
+func localeCountry(locale string) string {
+	country, _, ok := strings.Cut(locale, "-")
+	if !ok {
+		return ""
+	}
+	return country
+}
+
+func localeLanguage(locale string) string {
+	_, lang, ok := strings.Cut(locale, "-")
+	if !ok {
+		return ""
+	}
+	return lang
 }
 
 // backoff sleeps for an exponential delay with jitter, capped at 2s. This is
