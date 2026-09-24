@@ -70,6 +70,7 @@ func main() {
 	proxyPool := proxy.NewPool(cfg.Proxies, cfg.ProxyBanFails, cfg.ProxyBanCooldown)
 	limiter := ratelimit.New(cfg.RatePerProxyRPS, cfg.RateBurst)
 	counters := &metrics.Counters{}
+	latencies := metrics.NewLatencyRecorder(10000)
 
 	pool := &worker.Pool{
 		Concurrency: cfg.Concurrency,
@@ -80,6 +81,7 @@ func main() {
 		Parser:      p,
 		Sink:        sink,
 		Metrics:     counters,
+		Latencies:   latencies,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -87,8 +89,8 @@ func main() {
 
 	if cfg.MetricsAddr != "" {
 		go func() {
-			log.Printf("serving Prometheus metrics on %s/metrics", cfg.MetricsAddr)
-			if err := metrics.StartServer(ctx, cfg.MetricsAddr, counters); err != nil {
+			log.Printf("serving Prometheus metrics on %s/metrics (health at /healthz)", cfg.MetricsAddr)
+			if err := metrics.StartServer(ctx, cfg.MetricsAddr, counters, latencies); err != nil {
 				log.Printf("metrics server stopped: %v", err)
 			}
 		}()
