@@ -150,9 +150,20 @@ as their product. Plugging into one means the pipeline being delivered here
 (queue, worker pool, retries, parsing, metrics, ops) is real and owned by
 this codebase, while the legally risky edge — automated querying of Google
 directly — is a paid vendor's product, not code written here to defeat it.
-`internal/fetcher/provider_test.go` exercises the full request/response
-cycle against a local `httptest` server, so this path is verified without
-needing a real API key.
+
+**No API key yet? Nothing else in this repo needs one.** Mock mode requires
+none, `go test ./...` never touches the network, and
+`internal/fetcher/provider_test.go` / `internal/parser/json_provider_test.go`
+verify the full request/response and JSON-mapping cycle against a local
+`httptest` server and a realistic fixture, so this path is fully tested
+without a real key. What hasn't been verified yet, precisely because no key
+exists to test with, is a real provider's actual response matching this
+schema exactly — copy `.env.example` to `.env`, set whichever variable name
+`provider_api_key_env` points at once a trial or paid key exists, and it
+works with zero code changes. Worth a quick real-key smoke test before
+relying on this path for a client, since a vendor's exact field names are
+usually close but not guaranteed identical to what `json_provider.go`
+currently expects.
 
 ## Observability (Prometheus metrics)
 

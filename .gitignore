@@ -2,3 +2,4 @@
 *.exe
 *.jsonl
 .DS_Store
+.env
