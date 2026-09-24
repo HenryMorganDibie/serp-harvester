@@ -106,3 +106,40 @@ falling behind.
 - No automated proxy-pool refresh/rotation-from-provider integration exists
   — the proxy list in config is static. A real deployment would source it
   from whichever proxy vendor is chosen.
+
+## Job API health (POST /jobs, GET /jobs/{run_id})
+
+1. Verify the API process is alive:
+   - `curl localhost:<api_port>/healthz` should return `200 OK`. If this fails, check `systemctl status serp-harvester-api` (if using systemd) or `docker compose logs api`.
+2. Test job submission:
+   - `curl -X POST localhost:<api_port>/jobs -d '{"queries":["example query"]}' -H "Content-Type: application/json"` should return a JSON payload with `run_id` and `queries_accepted`.
+   - If the request returns a non-2xx status, inspect the API logs for errors (e.g., Redis connection failure, malformed request, or missing environment variables).
+3. Track job progress:
+   - Use `curl localhost:<api_port>/jobs/<run_id>` to fetch `submitted`, `completed`, `completed_known`, and `submitted_known`.
+   - If `completed` is `-1` or `completed_known` is `false`, ensure the `POSTGRES_DSN` environment variable is set and both the API and harvester processes point at the same PostgreSQL instance.
+   - If `submitted_known` is `false`, the API instance may have restarted and lost in‑memory bookkeeping; a restart is safe but you’ll lose visibility into prior runs.
+4. Alerting:
+   - The Prometheus rule `NoSuccessfulRequests` will fire if the success rate drops to zero; confirm the API is still enqueuing jobs by checking `serp_harvester_success_total` growth.
+
+## Scheduled harvests not firing
+
+1. Confirm the API was started with the `-schedule` flag pointing at a valid YAML file.
+2. Check the API logs at startup for a line like `scheduler running with X harvest(s) from <file>`. If you see a fatal error about loading the schedule, fix the YAML syntax or cron expression.
+3. Verify each harvest’s cron expression is valid:
+   - Use `robfig/cron` syntax reference; common mistakes include missing fields or using `@every` incorrectly.
+   - The API will reject an invalid expression with an error logged at registration time.
+4. Observe job creation:
+   - After a known tick (e.g., a harvest scheduled `cron: "0 10 * * *"`), query the Redis stream (`redis-cli XLEN <stream>`) or the `serp_harvester_success_total` metric to see if new jobs were added.
+   - If no new jobs appear, the scheduler may have stopped; restart the API container or service to re‑initialize it.
+5. Ensure the scheduler’s context isn’t cancelled:
+   - The API defers `sched.Stop()` on exit; a premature shutdown (e.g., SIGTERM) will stop the scheduler. Check container logs for shutdown signals.
+
+## Job completion visibility (PostgreSQL integration)
+
+1. Verify the `POSTGRES_DSN` env var is set for both the API (`cmd/api`) and the harvester (`cmd/harvester`) processes.
+2. Confirm the `sink_backend: postgres` setting is present in the harvester config.
+3. Run a quick test:
+   - Submit a job via the API, wait for it to finish, then query the Postgres `serp_results` table for the `run_id`. The row count should match `queries_accepted`.
+4. If `completed_known` is always `false`:
+   - Check that the API can reach the same Postgres instance (network, credentials).
+   - Look for connection errors in the API logs.
