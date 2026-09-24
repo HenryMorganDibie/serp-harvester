@@ -1,13 +1,14 @@
 # serp-harvester
 
 The engineering backbone for a large-scale Google SERP collection pipeline:
-concurrent worker pool, per-proxy rate limiting, proxy health/rotation,
-retry with backoff, a distributed queue (Redis Streams) for scaling across
-processes and hosts, structured extraction (organic results, featured
-snippets, "people also ask", AI Overviews), drift detection when a page's
-layout no longer matches expected selectors, a third-party SERP-provider
-fetch path, and Prometheus metrics for the same throughput numbers a
-request-volume SLA is measured in.
+concurrent worker pool, proxy health tracking with pluggable rotation
+strategies, per-proxy rate limiting with Retry-After-aware backoff, a
+distributed queue (Redis Streams) for scaling across processes and hosts,
+structured extraction (organic results, featured snippets, "people also
+ask", AI Overviews), drift detection when a page's layout no longer matches
+expected selectors, a third-party SERP-provider fetch path, PostgreSQL or
+JSON-Lines persistence with run/locale/device metadata, and Prometheus
+metrics for the same throughput numbers a request-volume SLA is measured in.
 
 It runs end to end, offline, with `go run ./cmd/harvester` — no API keys, no
 proxies, no network access required.
@@ -65,32 +66,40 @@ JSON-Lines results plus periodic throughput metrics to stdout:
 ## Architecture
 
 ```
-queries ──▶ queue.Source ──▶ worker.Pool (N goroutines)
- (Memory or                      │
-  Redis Streams)                 ├─▶ proxy.Pool.Next()      (rotation + cooldown on repeated failure)
-                                  ├─▶ ratelimit.Limiter.Wait (token bucket, keyed per proxy)
-                                  ├─▶ fetcher.Fetcher.Fetch  (mock fixtures, live HTTP, or a third-party provider)
-                                  ├─▶ worker.Parser.Parse    (HTML or provider-JSON, structured extraction + drift detection)
-                                  └─▶ store.Sink.Write       (JSON-Lines; swap for Kafka/warehouse)
+jobs (query+run_id+locale+device)
+  │
+  ▼
+queue.Source ──▶ worker.Pool (N goroutines)
+(Memory or           │
+ Redis Streams)       ├─▶ proxy.Pool.Next()      (health-tracked rotation: round-robin, random, or weighted-by-success-rate)
+                       ├─▶ ratelimit.Limiter.Wait (token bucket, keyed per proxy; honors provider Retry-After on 429)
+                       ├─▶ fetcher.Fetcher.Fetch  (mock fixtures, live HTTP, or a third-party provider)
+                       ├─▶ worker.Parser.Parse    (HTML or provider-JSON, structured extraction + drift detection)
+                       └─▶ store.Sink.Write       (JSON-Lines, or PostgreSQL with JSONB columns)
 
 metrics.Counters ──▶ periodic req/s + projected-daily-volume reporting, and
-                      a /metrics endpoint for Prometheus (-metrics-addr)
+                      a /metrics + /healthz endpoint for Prometheus (-metrics-addr)
 ```
 
 Every stage is an interface (`Fetcher`, `worker.Parser`, `Sink`, `queue.Source`)
 or a small struct (`proxy.Pool`, `ratelimit.Limiter`) so each one is
-independently swappable and independently testable. Going from here to a
-10M+/day production system is a matter of:
+independently swappable and independently testable. Note what this diagram
+does *not* have: the API/scheduler layer (see "Job/API layer" and
+"Scheduled harvesting" below, where they exist) only ever produces jobs onto
+`queue.Source` — it never calls `Fetcher` or `Parser` itself. That boundary
+is deliberate: it's what lets the acquisition backend change (direct HTTP vs.
+provider) without the job-submission layer knowing or caring. Going from
+here to a 10M+/day production system is a matter of:
 
-| This repo today                                     | Production                                                        |
-|-------------------------------------------------------|--------------------------------------------------------------------|
-| `queue.MemorySource` or `queue.RedisStreamSource`      | Already the same interface Kafka/SQS would sit behind              |
-| JSON-Lines file/stdout sink                            | Bulk warehouse writer or streaming sink implementing `store.Sink`  |
-| A handful of hardcoded proxy URLs                      | A managed residential/datacenter proxy pool, hot-reloaded          |
-| Plain `net/http` fetch, or a third-party provider fetch| Headless rendering for JS-rendered content if going direct-to-Google, or just more provider budget if not |
-| Single process, N goroutines                           | N processes across M hosts, all pointed at the same Redis stream (or Kafka/SQS) |
-| Selectors tuned to fixture HTML                        | Selectors tuned to live Google markup, versioned and monitored for drift (see below) |
-| `println`-based throughput reporting                   | Already solved: `/metrics` scrapes into the client's existing Prometheus/Grafana stack |
+| This repo today                                       | Production                                                        |
+|---------------------------------------------------------|----------------------------------------------------------------------|
+| `queue.MemorySource` or `queue.RedisStreamSource`        | Already the same interface Kafka/SQS would sit behind                |
+| JSON-Lines sink, or PostgreSQL with JSONB columns        | Already real; add a warehouse-streaming `Sink` if that's preferred   |
+| Proxy pool with health tracking + 3 rotation strategies  | Already real; point `proxy.Pool.Reload` at a vendor's proxy-list API |
+| Plain `net/http` fetch, or a third-party provider fetch  | Headless rendering for JS-rendered content if going direct-to-Google, or just more provider budget if not |
+| Single process, N goroutines                             | N processes across M hosts, all pointed at the same Redis stream (or Kafka/SQS) |
+| Selectors tuned to fixture HTML                           | Selectors tuned to live Google markup, versioned and monitored for drift (see below) |
+| `println` + Prometheus counters, no alerting              | Alerting rules on top of the same `/metrics` (see `deploy/prometheus/alerts.yml` where present) |
 
 The reason this table exists instead of the repo pretending to already be
 the production system: the remaining right-hand items depend on decisions
@@ -147,6 +156,68 @@ consumer if one dies mid-job without acknowledging — see
 `internal/queue/redis_stream_test.go` (run against an in-memory `miniredis`,
 no real Redis server needed for `go test`).
 
+## Proxy management
+
+`internal/proxy.Pool` tracks per-proxy health (success/failure counts,
+consecutive-failure cooldown) and supports three rotation strategies:
+
+```yaml
+proxy_strategy: round_robin   # default: predictable, fair
+# proxy_strategy: random               # avoids synchronized patterns across many processes
+# proxy_strategy: weighted_success_rate # biases toward proxies with a better observed success rate
+```
+
+`Pool.Reload(urls)` swaps the proxy list at runtime — the seam for pointing
+at a vendor's proxy-list API or a file watcher instead of a static config
+list — and preserves accumulated health stats for any URL that stays in the
+list. `Pool.AllStats()` returns a per-proxy snapshot (success/failure
+counts, ban state, last-used time) for an operator dashboard or a health
+endpoint. Authenticated proxies (`http://user:pass@host:port`) work with no
+special handling — Go's `net/http` applies the Basic auth automatically, for
+both plain HTTP proxying and HTTPS `CONNECT` tunneling, confirmed by
+`TestHTTPFetcher_AuthenticatedProxy` against a fake proxy server that
+verifies the header actually arrives. See `internal/proxy/pool_test.go`
+(9 tests, including a real bug this test suite caught: `Reload` originally
+lost health stats for retained proxies due to a map that was only populated
+on the empty-list code path).
+
+## Persistent storage (PostgreSQL)
+
+JSON-Lines (`store.JSONLSink`) is fine for the pipeline itself; for a client
+who wants to query results — by run, by query, by date range, by whether AI
+Overview was present — `store.PostgresSink` stores each result as a row with
+real columns (`run_id`, `query`, `locale`, `device`, `fetched_at`,
+`latency_ms`, `proxy_used`) plus the parsed SERP fields as native JSONB
+(`organic`, `featured_snippet`, `ai_overview`, `people_also_ask`,
+`calibration`), queryable with Postgres's own JSON operators instead of
+being an opaque blob:
+
+```yaml
+sink_backend: postgres
+postgres_dsn_env: POSTGRES_DSN   # read from the environment, never from this file
+```
+
+```bash
+export POSTGRES_DSN="postgres://user:pass@host:5432/dbname?sslmode=disable"
+go run ./cmd/harvester -config your-config.yaml
+```
+
+Schema (`CREATE TABLE IF NOT EXISTS`) is applied automatically on startup —
+safe to run on every deploy, no separate migration tool for this scope. When
+a result is calibration-flagged (selector drift), the raw pre-parse response
+body is stored in `raw_response` for whoever is retuning selectors —
+otherwise that column stays NULL, keeping normal rows small.
+
+**Tested against a real Postgres, not just mocked:** `internal/store/postgres_test.go`
+runs against an actual PostgreSQL instance (gated behind `POSTGRES_TEST_DSN`,
+skipped in normal CI the same way `tests/live` is) — write-then-read-back of
+every JSONB column, schema idempotency across repeated startups, and a
+fast-fail on an invalid DSN. Beyond the automated tests, the full CLI was
+run end-to-end against a real local Postgres container (`mode: mock`,
+`sink_backend: postgres`) and the resulting rows were queried directly:
+organic results, AI Overview presence, and calibration+raw-body capture all
+landed correctly.
+
 ## Third-party provider fetcher
 
 `internal/fetcher.ProviderFetcher` calls a SerpApi-compatible JSON API
@@ -189,6 +260,17 @@ genuinely had none. See `TestProviderFetcher_ResolvesAIOverviewPageToken`,
 `_InlineAIOverviewSkipsFollowUp`, and `_AIOverviewFollowUpFailureIsNonFatal`
 in `internal/fetcher/provider_test.go` — verified against a synthetic
 two-request fixture, per the same no-real-key caveat below.
+
+**Rate limits are handled per the provider's own signal, not guessed.** A
+429 response is parsed into a `*fetcher.RateLimitError` carrying whatever
+`Retry-After` the provider sent (seconds or HTTP-date form, per RFC 9110),
+and `worker.Pool` waits out that exact duration before retrying instead of
+applying its generic exponential backoff —
+`TestPool_HonorsRateLimitRetryAfter` confirms this by timing an actual
+retry cycle. Three more tests
+(`TestProviderFetcher_RateLimitWithRetryAfterSeconds` /
+`_HTTPDate` / `_WithoutRetryAfter`) cover both `Retry-After` formats and the
+case where none is given.
 
 **No API key yet? Nothing else in this repo needs one.** Mock mode requires
 none, `go test ./...` never touches the network, and
@@ -402,18 +484,22 @@ number requires a different architecture from what's here — it requires:
 
 ```
 cmd/harvester/          CLI entrypoint and wiring
-cmd/loadtest/           Offline orchestration-throughput measurement tool
-internal/model/         SerpResult and its sub-structures
+cmd/loadtest/           Offline orchestration measurement: fixed-count, concurrency sweep, and soak-test modes
+internal/model/         SerpResult and its sub-structures (incl. run_id/locale/device, raw body on drift)
 internal/queue/         Job sources: in-memory, and Redis Streams for multi-process/host scaling
-internal/proxy/         Proxy rotation pool with failure-based cooldown
+internal/proxy/         Proxy pool: health tracking, dynamic reload, 3 rotation strategies
 internal/ratelimit/     Per-key token-bucket rate limiter
-internal/fetcher/       Fetcher interface + Mock, direct HTTP, and third-party provider implementations
+internal/fetcher/       Fetcher interface + Mock, direct HTTP, and third-party provider implementations,
+                        plus RateLimitError/Retry-After parsing (errors.go)
 internal/parser/        HTML and provider-JSON → SerpResult extraction, with drift detection
 internal/worker/        The pool tying fetch → parse → sink together with retry/backoff
-internal/metrics/       Run counters, periodic throughput reporting, and a Prometheus /metrics endpoint
-internal/store/         Result sink interface + JSON-Lines implementation
+internal/metrics/       Run counters, latency percentile tracking, periodic reporting,
+                        and a Prometheus /metrics + /healthz endpoint
+internal/store/         Sink interface + JSON-Lines and PostgreSQL implementations
 internal/config/        YAML config loading
 configs/                Example config
+deploy/                 Docker Compose (harvester+Redis+Prometheus+Grafana), systemd unit, Dockerfile
+tests/live/             Real-network integration tests, gated behind HARVESTER_LIVE=true (never run in CI)
 ```
 
 ## Contact
