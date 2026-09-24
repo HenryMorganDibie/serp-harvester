@@ -13,7 +13,7 @@ test-playwright:
 	SERP_HARVESTER_PLAYWRIGHT=1 go test ./internal/fetcher/ ./internal/worker/ -run 'Playwright' -v
 
 playwright-install:
-	go run github.com/playwright-community/playwright-go/cmd/playwright install --with-deps chromium
+	sh scripts/install-playwright.sh --with-deps
 
 vet:
 	go vet ./...

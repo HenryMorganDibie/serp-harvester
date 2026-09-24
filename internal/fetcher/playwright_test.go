@@ -3,7 +3,10 @@ package fetcher
 import (
 	"net/url"
 	"os"
+	"regexp"
 	"testing"
+
+	"github.com/playwright-community/playwright-go"
 )
 
 // These tests cover the Playwright fetcher's pure logic and need no
@@ -134,5 +137,26 @@ func TestSessionKey_SeparatesContextLevelSettings(t *testing.T) {
 		if sessionKey(r) == sessionKey(base) {
 			t.Errorf("expected a different session key for %+v", r)
 		}
+	}
+}
+
+// TestInstallScript_MatchesPlaywrightGoDriverVersion keeps
+// scripts/install-playwright.sh in step with go.mod: playwright-go refuses
+// a driver whose version differs from the one it was built for.
+func TestInstallScript_MatchesPlaywrightGoDriverVersion(t *testing.T) {
+	script, err := os.ReadFile("../../scripts/install-playwright.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^PLAYWRIGHT_VERSION=(\S+)$`).FindSubmatch(script)
+	if m == nil {
+		t.Fatal("PLAYWRIGHT_VERSION not found in scripts/install-playwright.sh")
+	}
+	d, err := playwright.NewDriver(&playwright.RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(m[1]); got != d.Version {
+		t.Errorf("install script installs driver %s, but playwright-go in go.mod expects %s; update PLAYWRIGHT_VERSION and PLAYWRIGHT_CORE_SHA512", got, d.Version)
 	}
 }

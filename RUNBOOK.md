@@ -214,7 +214,7 @@ code workaround.
      `PLAYWRIGHT_BROWSERS_PATH` the process uses (systemd's
      `ProtectHome=true` hides `~/.cache`, see the unit file).
    - `launch chromium` means the browser or its system libraries are
-     missing; `playwright install --with-deps chromium` installs both.
+     missing; `scripts/install-playwright.sh --with-deps` installs both.
 2. `BrowserBlockedPagesHigh` fired
    (`serp_harvester_browser_blocked_total` rising). Check the `reason`
    label:

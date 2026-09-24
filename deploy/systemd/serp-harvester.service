@@ -19,7 +19,7 @@ EnvironmentFile=-/etc/serp-harvester.env
 # mode: playwright only: install the driver and Chromium outside the home
 # directory (ProtectHome hides it), e.g. as root:
 #   PLAYWRIGHT_DRIVER_PATH=/opt/ms-playwright-go PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
-#     /opt/serp-harvester/bin/playwright install --with-deps chromium
+#     sh scripts/install-playwright.sh --with-deps
 # then uncomment these so the harvester finds them:
 #Environment=PLAYWRIGHT_DRIVER_PATH=/opt/ms-playwright-go
 #Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright

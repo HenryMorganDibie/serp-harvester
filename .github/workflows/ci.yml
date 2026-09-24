@@ -13,11 +13,11 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go vet ./...
-      # Driver + Chromium for the Playwright fetcher's browser tests, from
-      # the playwright-go version pinned in go.mod. The tests only render
-      # local fixtures; nothing contacts Google.
+      # Driver + Chromium for the Playwright fetcher's browser tests (see
+      # the script for why it doesn't use playwright-go's own installer).
+      # The tests only render local fixtures; nothing contacts Google.
       - name: install Playwright Chromium
-        run: go run github.com/playwright-community/playwright-go/cmd/playwright install --with-deps chromium
+        run: sh scripts/install-playwright.sh --with-deps
       - run: go test ./... -v
         env:
           SERP_HARVESTER_PLAYWRIGHT: "1"

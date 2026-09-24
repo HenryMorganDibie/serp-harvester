@@ -120,7 +120,8 @@ const maxBodyBytes = 5 << 20
 
 // NewPlaywrightFetcher starts the Playwright driver and launches Chromium,
 // failing fast if either is missing. It never downloads browsers at
-// runtime: install them at build time (see deploy/playwright.Dockerfile).
+// runtime: install them beforehand with scripts/install-playwright.sh (see
+// also deploy/playwright.Dockerfile).
 // Call Close to shut the browser down.
 func NewPlaywrightFetcher(cfg PlaywrightConfig) (*PlaywrightFetcher, error) {
 	if cfg.Endpoint == "" {

@@ -67,8 +67,9 @@ change, not new code.)
 
 The `harvester-playwright` service is behind a Compose profile, so a plain
 `up` never starts it. It builds `deploy/playwright.Dockerfile` (Debian, with
-the Playwright driver and Chromium installed at build time from the
-playwright-go version pinned in `go.mod`, so nothing downloads at runtime)
+the Playwright driver and Chromium installed at build time by
+`scripts/install-playwright.sh`, matched to the playwright-go version in
+`go.mod`, so nothing downloads at runtime)
 and runs `deploy/config.playwright.yaml`: a Redis consumer rendering
 `live_endpoint` in headless Chromium, with `redis_seed_queue: false` so it
 never fires queries on boot.

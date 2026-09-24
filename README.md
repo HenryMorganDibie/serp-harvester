@@ -511,7 +511,7 @@ all.
 ## Browser mode (Playwright)
 
 ```bash
-make playwright-install   # Playwright driver + Chromium, pinned to go.mod's playwright-go
+make playwright-install   # Playwright driver + Chromium (scripts/install-playwright.sh), matched to go.mod
 go run ./cmd/harvester -config your-config.yaml -mode playwright -i-have-reviewed-tos
 ```
 

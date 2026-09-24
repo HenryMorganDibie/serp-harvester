@@ -3,27 +3,28 @@
 # libraries, which roughly adds 600MB to an image the mock, live and
 # provider modes don't need.
 #
-# The Playwright driver and Chromium are installed at build time with the
-# installer compiled from the playwright-go version pinned in go.mod, so the
-# driver, the browser build and the Go bindings always match. Nothing is
-# downloaded at runtime. No credentials are baked in.
+# The Playwright driver and Chromium are installed at build time by
+# scripts/install-playwright.sh, whose driver version a unit test ties to
+# the playwright-go version in go.mod, so the driver, the browser build and
+# the Go bindings always match. Nothing is downloaded at runtime. No
+# credentials are baked in.
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /out/harvester ./cmd/harvester \
- && CGO_ENABLED=0 go build -o /out/playwright github.com/playwright-community/playwright-go/cmd/playwright
+RUN CGO_ENABLED=0 go build -o /out/harvester ./cmd/harvester
 
-# Debian 12 is a Playwright-supported distribution for `--with-deps`.
+# Debian 12 is a Playwright-supported distribution for `--with-deps`; its
+# nodejs (18) meets the driver's Node >= 18 requirement.
 FROM debian:bookworm-slim
 ENV PLAYWRIGHT_DRIVER_PATH=/opt/ms-playwright-go \
     PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
-COPY --from=build /out/playwright /usr/local/bin/playwright
+COPY scripts/install-playwright.sh /tmp/install-playwright.sh
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates \
- && playwright install --with-deps chromium \
- && rm -rf /var/lib/apt/lists/* \
+ && apt-get install -y --no-install-recommends ca-certificates curl nodejs \
+ && sh /tmp/install-playwright.sh --with-deps \
+ && rm -rf /var/lib/apt/lists/* /tmp/install-playwright.sh \
  && chmod -R a+rX /opt/ms-playwright /opt/ms-playwright-go \
  && useradd --uid 10001 --create-home harvester
 WORKDIR /app

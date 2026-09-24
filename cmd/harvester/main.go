@@ -172,7 +172,7 @@ func buildFetcherAndParser(cfg config.Config, iAcceptLiveRisk *bool, counters *m
 			Metrics:        counters.Browser,
 		})
 		if err != nil {
-			log.Fatalf("build playwright fetcher: %v (install Chromium with `go run github.com/playwright-community/playwright-go/cmd/playwright install --with-deps chromium`, or set browser_executable_path)", err)
+			log.Fatalf("build playwright fetcher: %v (install the driver and Chromium with `make playwright-install` / scripts/install-playwright.sh)", err)
 		}
 		return f, parser.New()
 
