@@ -45,6 +45,11 @@ type Pool struct {
 	Parser    Parser
 	Sink      store.Sink
 	Metrics   *metrics.Counters
+
+	// Latencies, if set, records fetch latency for every successful fetch —
+	// used for percentile reporting (see cmd/loadtest). Nil is safe: no
+	// latency tracking occurs.
+	Latencies *metrics.LatencyRecorder
 }
 
 // Run starts Concurrency workers consuming jobs, and blocks until jobs is
@@ -92,8 +97,14 @@ func (p *Pool) process(ctx context.Context, job queue.Job) {
 		}
 
 		if err := p.Limiter.Wait(ctx, px.Key()); err != nil {
-			lastErr = err
-			return // context cancelled
+			// Context cancelled (shutdown/timeout) while waiting for a rate
+			// limit slot. Counted as dropped rather than silently
+			// unaccounted for, so success+dropped stays a complete count of
+			// every job actually attempted — found via soak testing, where
+			// jobs in flight at the exact cutoff need to land somewhere.
+			p.Metrics.IncDropped()
+			log.Printf("worker: job %q dropped: %v", job.Query, err)
+			return
 		}
 
 		req := fetcher.Request{
@@ -103,11 +114,16 @@ func (p *Pool) process(ctx context.Context, job queue.Job) {
 		}
 
 		resp, err := p.Fetcher.Fetch(ctx, req)
-		p.ProxyPool.ReportResult(px, err)
+		if newlyBanned := p.ProxyPool.ReportResult(px, err); newlyBanned {
+			p.Metrics.IncProxyBanned()
+		}
 		if err != nil {
 			lastErr = err
 			p.Metrics.IncFailure()
 			continue
+		}
+		if p.Latencies != nil {
+			p.Latencies.Record(resp.Latency)
 		}
 
 		result, err := p.Parser.Parse(job.Query, resp.Body)
@@ -124,6 +140,12 @@ func (p *Pool) process(ctx context.Context, job queue.Job) {
 			log.Printf("worker: sink write failed for %q: %v", job.Query, err)
 		}
 		p.Metrics.IncSuccess()
+		if result.AIOverview != nil {
+			p.Metrics.IncAIOverviewPresent()
+		}
+		if result.Calibration != nil {
+			p.Metrics.IncCalibrationFlagged()
+		}
 		return
 	}
 
