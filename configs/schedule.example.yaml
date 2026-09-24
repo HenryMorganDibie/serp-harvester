@@ -1,0 +1,23 @@
+# Example scheduled-harvests file for `cmd/api -schedule`.
+#
+# Each entry runs its `queries` on a standard 5-field cron schedule (or
+# "@every <duration>", e.g. "@every 15m") — the classic "query set A at
+# 10:00, query set B at 10:15" pattern, but expressed as real cron
+# expressions rather than a bespoke scheduling format.
+harvests:
+  - name: "morning-set-a"
+    cron: "0 10 * * *" # 10:00 daily
+    queries:
+      - "best noise cancelling headphones 2026"
+      - "best laptops for students 2026"
+    country: "US"
+    language: "en"
+
+  - name: "morning-set-b"
+    cron: "15 10 * * *" # 10:15 daily
+    queries:
+      - "how does a heat pump work"
+      - "golang worker pool pattern"
+    country: "US"
+    language: "en"
+    device: "mobile"

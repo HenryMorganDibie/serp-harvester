@@ -1,9 +1,11 @@
 // Command api runs the job-submission HTTP layer: POST /jobs enqueues
 // queries onto the same Redis Stream cmd/harvester consumes from, GET
-// /jobs/{run_id} reports progress. This binary never fetches or parses a
-// SERP itself — it only ever pushes onto queue.Producer, keeping job
-// submission strictly separate from harvesting (see internal/api's package
-// doc for why that boundary matters).
+// /jobs/{run_id} reports progress. It also optionally runs scheduled
+// harvests (recurring cron-based query sets) from the same process, since
+// both the HTTP handlers and the scheduler are pure producers. This binary
+// never fetches or parses a SERP itself — it only ever pushes onto
+// queue.Producer, keeping job submission strictly separate from harvesting
+// (see internal/api's package doc for why that boundary matters).
 package main
 
 import (
@@ -20,6 +22,7 @@ import (
 
 	"github.com/HenryMorganDibie/serp-harvester/internal/api"
 	"github.com/HenryMorganDibie/serp-harvester/internal/queue"
+	"github.com/HenryMorganDibie/serp-harvester/internal/scheduler"
 	"github.com/HenryMorganDibie/serp-harvester/internal/store"
 )
 
@@ -28,6 +31,7 @@ func main() {
 	redisAddr := flag.String("redis-addr", "localhost:6379", "Redis address")
 	redisStream := flag.String("redis-stream", "serp-harvester:queries", "Redis stream name (must match cmd/harvester's redis_stream)")
 	postgresDSNEnv := flag.String("postgres-dsn-env", "POSTGRES_DSN", "environment variable holding the Postgres DSN, for job-status completion counts (optional)")
+	scheduleFile := flag.String("schedule", "", "optional YAML file of scheduled harvests (see internal/scheduler.LoadHarvests); unset disables scheduling entirely")
 	flag.Parse()
 
 	client := redis.NewClient(&redis.Options{Addr: *redisAddr})
@@ -54,6 +58,23 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if *scheduleFile != "" {
+		harvests, err := scheduler.LoadHarvests(*scheduleFile)
+		if err != nil {
+			log.Fatalf("load schedule: %v", err)
+		}
+		sched := scheduler.New(producer)
+		for _, h := range harvests {
+			if err := sched.AddHarvest(h); err != nil {
+				log.Fatalf("register scheduled harvest: %v", err)
+			}
+			log.Printf("scheduled harvest %q registered: %q", h.Name, h.CronExpr)
+		}
+		sched.Start()
+		defer sched.Stop()
+		log.Printf("scheduler running with %d harvest(s) from %s", len(harvests), *scheduleFile)
+	}
 
 	go func() {
 		<-ctx.Done()
