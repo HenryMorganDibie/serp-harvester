@@ -1,7 +1,7 @@
 # Multi-stage build: compile the harvester binary, then run it in a minimal
 # image. No Google/provider credentials are baked in — those are supplied
 # at runtime via environment variables and a mounted config file.
-FROM golang:1.22-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
