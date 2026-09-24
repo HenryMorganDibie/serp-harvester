@@ -11,19 +11,27 @@ import (
 
 	"github.com/HenryMorganDibie/serp-harvester/internal/fetcher"
 	"github.com/HenryMorganDibie/serp-harvester/internal/metrics"
-	"github.com/HenryMorganDibie/serp-harvester/internal/parser"
+	"github.com/HenryMorganDibie/serp-harvester/internal/model"
 	"github.com/HenryMorganDibie/serp-harvester/internal/proxy"
 	"github.com/HenryMorganDibie/serp-harvester/internal/queue"
 	"github.com/HenryMorganDibie/serp-harvester/internal/ratelimit"
 	"github.com/HenryMorganDibie/serp-harvester/internal/store"
 )
 
+// Parser extracts a SerpResult from a fetcher's raw response body. Both the
+// HTML parser (internal/parser.Parser) and the JSON parser for structured
+// third-party provider responses (internal/parser.JSONParser) satisfy this,
+// so the worker pool never needs to know which fetch path is active.
+type Parser interface {
+	Parse(query string, body []byte) (*model.SerpResult, error)
+}
+
 // userAgents is a small, honest rotation pool. This is standard practice for
 // identifying different concurrent clients — not fingerprint spoofing.
 var userAgents = []string{
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) serp-harvester-sample/0.1",
-	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) serp-harvester-sample/0.1",
-	"Mozilla/5.0 (X11; Linux x86_64) serp-harvester-sample/0.1",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) serp-harvester/0.1",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) serp-harvester/0.1",
+	"Mozilla/5.0 (X11; Linux x86_64) serp-harvester/0.1",
 }
 
 // Pool wires together every stage of the pipeline.
@@ -34,7 +42,7 @@ type Pool struct {
 	Fetcher   fetcher.Fetcher
 	ProxyPool *proxy.Pool
 	Limiter   *ratelimit.Limiter
-	Parser    *parser.Parser
+	Parser    Parser
 	Sink      store.Sink
 	Metrics   *metrics.Counters
 }
@@ -124,7 +132,7 @@ func (p *Pool) process(ctx context.Context, job queue.Job) {
 }
 
 // backoff sleeps for an exponential delay with jitter, capped at 2s. This is
-// deliberately short since the sample's mock mode should stay fast; a live
+// deliberately short since mock-mode runs should stay fast; a live
 // production deployment would use longer, configurable backoff tied to the
 // client's agreed request budget.
 func backoff(attempt int) {
