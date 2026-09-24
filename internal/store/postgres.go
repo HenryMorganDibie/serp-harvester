@@ -69,6 +69,18 @@ func (s *PostgresSink) Close() error {
 	return s.db.Close()
 }
 
+// CountByRunID returns how many results have been written for runID so
+// far — what a job/API layer's status endpoint uses to report progress
+// against however many queries were submitted for that run.
+func (s *PostgresSink) CountByRunID(ctx context.Context, runID string) (int64, error) {
+	var count int64
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM serp_results WHERE run_id = $1", runID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("postgres sink: count by run_id: %w", err)
+	}
+	return count, nil
+}
+
 // Write implements Sink.
 func (s *PostgresSink) Write(result *model.SerpResult) error {
 	organic, err := json.Marshal(result.Organic)

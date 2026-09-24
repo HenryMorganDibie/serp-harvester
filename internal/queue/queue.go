@@ -29,6 +29,15 @@ type Source interface {
 	Jobs(ctx context.Context) <-chan Job
 }
 
+// Producer submits a job onto a queue. This is the seam a job/API layer or a
+// scheduler pushes through — it depends only on this interface, never on
+// Fetcher or Parser, so submitting work stays separate from doing work.
+// RedisStreamSource implements this today; MemorySource doesn't, since
+// there's no meaningful "push one job" operation for a fixed slice.
+type Producer interface {
+	PushJob(ctx context.Context, job Job) error
+}
+
 // MemorySource feeds jobs from an in-memory slice. It's what a single
 // process, single-run harvest uses; RedisStreamSource is the drop-in
 // replacement for sharing one queue across many processes/hosts.

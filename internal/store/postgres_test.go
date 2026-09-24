@@ -126,6 +126,49 @@ func TestPostgresSink_WriteAndReadBack(t *testing.T) {
 	}
 }
 
+func TestPostgresSink_CountByRunID(t *testing.T) {
+	sink := newTestSink(t)
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		err := sink.Write(&model.SerpResult{
+			Query:     "query",
+			RunID:     "run-a",
+			FetchedAt: time.Now().UTC(),
+		})
+		if err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+	if err := sink.Write(&model.SerpResult{Query: "query", RunID: "run-b", FetchedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	count, err := sink.CountByRunID(ctx, "run-a")
+	if err != nil {
+		t.Fatalf("CountByRunID: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("expected 3 results for run-a, got %d", count)
+	}
+
+	count, err = sink.CountByRunID(ctx, "run-b")
+	if err != nil {
+		t.Fatalf("CountByRunID: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 result for run-b, got %d", count)
+	}
+
+	count, err = sink.CountByRunID(ctx, "nonexistent-run")
+	if err != nil {
+		t.Fatalf("CountByRunID: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 results for a nonexistent run, got %d", count)
+	}
+}
+
 func TestPostgresSink_StoresRawBodyOnCalibration(t *testing.T) {
 	sink := newTestSink(t)
 
