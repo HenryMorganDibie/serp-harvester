@@ -6,10 +6,14 @@ nothing here is asserted without something to point at.
 
 ## Which working scrapers do you currently have, built/operated by you?
 
-This repository. It is a self-hosted, distributed SERP collection pipeline
-built specifically for this engagement — not a prior production system
-being repackaged. See [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)
-for the full architecture-to-operations breakdown.
+My current working SERP collection system is this distributed Go pipeline:
+self-hosted worker pool, Redis Streams for horizontal scaling, proxy
+rotation, rate limiting, structured extraction with drift detection, and
+Prometheus observability, running end to end today. See
+[PRODUCTION_READINESS.md](PRODUCTION_READINESS.md) for the full
+architecture-to-operations breakdown. What it hasn't done yet is operate
+against your specific volume in production — see the volume question below
+for exactly what that means and doesn't mean.
 
 ## Do you have a Google SERP / AI Overviews solution? Direct from Google, or third-party?
 
