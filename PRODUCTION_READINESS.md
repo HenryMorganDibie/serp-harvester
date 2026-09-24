@@ -177,3 +177,14 @@ fine exposed directly to the internet), and the in-memory `submitted` count
 resets if the API process restarts (a run submitted before a restart still
 shows `submitted_known: false` after one, even though its results are still
 in Postgres and countable).
+
+## 19. Scheduled harvesting
+
+`cmd/api -schedule` (`internal/scheduler`, real cron expressions via
+`robfig/cron`) — see [README "Scheduled harvesting"](README.md#scheduled-harvesting).
+Verified against a real Redis container with a fast interval (queue length
+confirmed growing on schedule, not just that the timer fired), plus 3 unit
+tests covering cron validation and per-tick behavior. Not yet built:
+persisting scheduled-harvest definitions anywhere other than the YAML file
+loaded at process start — adding/removing a schedule means restarting
+`cmd/api` with an updated file, not a dynamic API for managing schedules.

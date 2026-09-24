@@ -24,8 +24,8 @@ proxies, no network access required.
 - **Scaling**: Redis Streams distributed queue, horizontal worker scaling,
   per-proxy rate limiting, retry/backoff, Prometheus metrics.
 - **Job submission**: an HTTP API (`cmd/api`) for `POST /jobs` +
-  `GET /jobs/{run_id}`, as a pure queue producer — see
-  [Job/API layer](#jobapi-layer).
+  `GET /jobs/{run_id}`, plus real cron-based scheduled harvesting — both as
+  pure queue producers — see [Job/API layer](#jobapi-layer).
 - **Measured capacity**: see [Load testing](#load-testing) below for actual
   numbers (orchestration throughput and the latest soak test), not
   projections.
@@ -195,6 +195,31 @@ failure, unknown run ID, no-counter-configured, etc.) with a fake producer,
 so CI doesn't need real infrastructure to verify the logic — the real-infra
 run was a one-time manual confirmation against local Docker containers, not
 something re-run automatically on every commit today.
+
+### Scheduled harvesting
+
+`cmd/api -schedule your-schedule.yaml` also runs recurring harvests —
+`internal/scheduler` wraps a real cron parser (`robfig/cron`), so "query set
+A at 10:00, query set B at 10:15" is an actual 5-field cron expression, not
+a bespoke interval format:
+
+```yaml
+harvests:
+  - name: "morning-set-a"
+    cron: "0 10 * * *"
+    queries: ["best noise cancelling headphones 2026", "best laptops for students 2026"]
+    country: "US"
+    language: "en"
+```
+
+Every tick gets a fresh `run_id` and pushes through the same
+`queue.Producer` the job/API layer uses — the scheduler is a producer too,
+never a fetcher. **Tested for real, not just unit tests:** a schedule with a
+3-second interval was run against the real Redis container for 10+ seconds
+and the stream's length was confirmed growing on schedule (4 → 14 → 16
+entries), not just that `AddFunc` was called. `internal/scheduler/scheduler_test.go`
+covers cron-expression validation, per-tick job pushing, and fresh-run-ID-per-tick
+using a fast `@every 100ms` schedule so CI stays quick.
 
 ## Proxy management
 
@@ -551,6 +576,7 @@ cmd/api/                Job-submission HTTP layer: POST /jobs, GET /jobs/:run_id
 cmd/loadtest/           Offline orchestration measurement: fixed-count, concurrency sweep, and soak-test modes
 internal/model/         SerpResult and its sub-structures (incl. run_id/locale/device, raw body on drift)
 internal/api/           HTTP handlers for cmd/api — depends only on queue.Producer, never Fetcher/Parser
+internal/scheduler/     Cron-based recurring harvests — also a pure queue.Producer, wired into cmd/api
 internal/queue/         Job sources/producer: in-memory, and Redis Streams for multi-process/host scaling
 internal/proxy/         Proxy pool: health tracking, dynamic reload, 3 rotation strategies
 internal/ratelimit/     Per-key token-bucket rate limiter
