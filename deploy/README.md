@@ -63,6 +63,36 @@ either templating that value per-replica or moving it to an environment
 variable — noted here rather than glossed over, since this is a config
 change, not new code.)
 
+### Headless-browser harvester (`mode: playwright`, opt-in)
+
+The `harvester-playwright` service is behind a Compose profile, so a plain
+`up` never starts it. It builds `deploy/playwright.Dockerfile` (Debian, with
+the Playwright driver and Chromium installed at build time from the
+playwright-go version pinned in `go.mod`, so nothing downloads at runtime)
+and runs `deploy/config.playwright.yaml`: a Redis consumer rendering
+`live_endpoint` in headless Chromium, with `redis_seed_queue: false` so it
+never fires queries on boot.
+
+```bash
+# in deploy/.env, only after reviewing the target's Terms of Service:
+#   HARVESTER_REVIEWED_TOS=true
+docker compose -f deploy/docker-compose.yml --profile playwright up -d --build
+```
+
+Without `HARVESTER_REVIEWED_TOS=true` it exits with the same refusal as
+`-mode live` (and restarts with backoff) instead of fetching. The service
+sets `shm_size: 1gb` (Chromium crashes tabs in Docker's 64MB default
+`/dev/shm`), `init: true` (reaps Chromium helper processes and forwards
+SIGTERM for a clean browser shutdown), a 2GB memory limit, and a stop grace
+period longer than `request_timeout` so in-flight pages drain. Prometheus
+scrapes it as its own job, `serp-harvester-playwright`, and the
+`BrowserBlockedPagesHigh` / `BrowserDisconnectsHigh` alerts cover it. Size
+`browser_pool_size` to memory: each session is roughly 100 to 300MB.
+
+This image renders pages; it does not get past CAPTCHAs, blocks or rate
+limits. See README "Browser mode (Playwright)" for what it does and doesn't
+do.
+
 ## Option 2: systemd (bare-metal / VM)
 
 ```bash

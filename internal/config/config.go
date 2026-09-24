@@ -16,6 +16,9 @@ type Config struct {
 	//   "live"     - real HTTP requests directly to LiveEndpoint.
 	//   "provider" - real HTTP requests to a third-party SERP data API
 	//                (ProviderBaseURL), parsed as JSON instead of HTML.
+	//   "playwright" - headless Chromium renders LiveEndpoint's results
+	//                page; the rendered HTML goes through the same HTML
+	//                parser as "live".
 	Mode string `yaml:"mode"`
 
 	Queries []string `yaml:"queries"`
@@ -54,6 +57,27 @@ type Config struct {
 	ProviderBaseURL   string `yaml:"provider_base_url"`
 	ProviderAPIKeyEnv string `yaml:"provider_api_key_env"`
 	ProviderEngine    string `yaml:"provider_engine"`
+
+	// Headless-browser settings, used when Mode is "playwright". That mode
+	// also uses LiveEndpoint, RequestTimeout (the per-fetch budget for
+	// navigation, the consent step and BrowserWaitSelector together), and
+	// the same proxy pool and rate limits as every other mode.
+	//
+	// BrowserPoolSize caps concurrently open browser sessions (one
+	// context + page each); workers beyond it wait. BrowserHeadful shows
+	// a browser window, for local debugging only. BrowserExecutablePath
+	// selects a specific Chromium binary instead of the Playwright-
+	// installed one; note that a full Chrome/Chromium build (also what
+	// BrowserHeadful runs) makes background requests to Google services
+	// outside the proxy pool, which the default headless shell does not.
+	// BrowserWaitSelector, if set, is awaited after page
+	// load so late-rendered results are captured. BrowserMaxSessionUses
+	// recycles a session (and its cookies) after that many fetches.
+	BrowserPoolSize       int    `yaml:"browser_pool_size"`
+	BrowserHeadful        bool   `yaml:"browser_headful"`
+	BrowserExecutablePath string `yaml:"browser_executable_path"`
+	BrowserWaitSelector   string `yaml:"browser_wait_selector"`
+	BrowserMaxSessionUses int    `yaml:"browser_max_session_uses"`
 
 	// SinkBackend selects the result sink: "jsonl" (default, writes to
 	// OutputPath) or "postgres" (structured storage, see PostgresDSNEnv).
@@ -96,6 +120,9 @@ func Default() Config {
 		PostgresDSNEnv:   "POSTGRES_DSN",
 		OutputPath:       "-", // stdout
 		ReportInterval:   2 * time.Second,
+
+		BrowserPoolSize:       4,
+		BrowserMaxSessionUses: 50,
 	}
 }
 

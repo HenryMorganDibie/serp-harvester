@@ -32,6 +32,11 @@ type Counters struct {
 	// ProxyBanned counts how many times a proxy transitioned into cooldown
 	// after repeated failures (see proxy.Pool.ReportResult).
 	ProxyBanned uint64
+
+	// Browser holds headless-browser counters when mode: playwright is
+	// active, and is nil otherwise. Set it before starting the reporter or
+	// the metrics server.
+	Browser *BrowserCounters
 }
 
 // IncSuccess records one successful fetch+parse.
@@ -115,4 +120,12 @@ func (c *Counters) report(elapsed time.Duration) {
 		elapsed.Round(time.Second), s.Success, s.Failure, s.Retried, s.Dropped, total, rps, dailyProjection,
 		s.AIOverviewPresent, s.CalibrationFlagged, s.ProxyBanned,
 	)
+	if c.Browser != nil {
+		b := c.Browser.Snapshot()
+		fmt.Printf(
+			"[metrics] browser launches=%d disconnects=%d nav_timeouts=%d consent_handled=%d blocked_captcha=%d blocked_consent=%d blocked_interstitial=%d sessions_open=%d sessions_in_use=%d\n",
+			b.Launches, b.Disconnects, b.NavigationTimeouts, b.ConsentHandled,
+			b.BlockedCaptcha, b.BlockedConsent, b.BlockedInterstitial, b.SessionsOpen, b.SessionsInUse,
+		)
+	}
 }

@@ -45,6 +45,23 @@ spoofing was added; see README for why). This is reproducible via
 `HARVESTER_LIVE=true go test ./tests/live/... -run GoogleDirect -v`
 (`tests/live/google_direct_test.go`).
 
+**Direct Google, rendered (`mode: playwright`).** A third fetch path renders
+the results page in headless Chromium through the same pipeline (same proxy
+pool, rate limiter, parser, sinks, metrics). Compared with `mode: live` it
+adds JavaScript rendering, which gets past the JS-execution check a plain
+HTTP client stops at; consent-page dismissal via the page's own "reject
+all" form; `Retry-After` handling on 429; and explicit classification of
+CAPTCHA and other block pages, which are reported as failures and never
+interacted with. It adds no CAPTCHA solving, fingerprint spoofing or other
+evasion. Verified against local fixtures in real Chromium
+(`internal/fetcher/playwright_browser_test.go`,
+`internal/worker/playwright_pipeline_test.go`); **not yet run against live
+Google**, so whether it returns usable results there, and how often it is
+blocked, is unmeasured. `HARVESTER_LIVE=true go test ./tests/live/... -run
+Playwright -v` is the test that measures it. Rendering does not make direct
+scraping production-ready: Google still challenges real browsers, and the
+parser's selectors are still fixture-targeted.
+
 **Recommended path for real volume:** the provider fetch path. It's fully
 built and unit-tested against a realistic fixture and a local `httptest`
 server; the one thing not yet verified is a real vendor's exact field names
@@ -75,8 +92,9 @@ operation with a track record. What exists instead:
 ## Could you deploy and maintain the solution on your servers, rather than Apify or an external hosted API?
 
 Yes, concretely: [`deploy/`](deploy/) contains a working Docker Compose
-stack (harvester + Redis + Prometheus + Grafana) and a systemd unit for
-bare-metal/VM deployment, both running entirely on infrastructure you
+stack (harvester + Redis + Prometheus + Grafana, plus an opt-in
+headless-Chromium harvester image for `mode: playwright`) and a systemd unit
+for bare-metal/VM deployment, both running entirely on infrastructure you
 control. `docker compose -f deploy/docker-compose.yml up -d` is the whole
 deployment. See [`deploy/README.md`](deploy/README.md).
 

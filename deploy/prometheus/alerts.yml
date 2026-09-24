@@ -64,6 +64,24 @@ groups:
           summary: "p99 fetch latency above 5s for 5m"
           description: "Check target/provider response times and request_timeout configuration."
 
+      - alert: BrowserBlockedPagesHigh
+        expr: sum(increase(serp_harvester_browser_blocked_total[15m])) > 5
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Playwright mode hit more than 5 CAPTCHA/consent/interstitial pages in 15m"
+          description: "The target is challenging this egress. Rendering does not get past these pages; see RUNBOOK.md 'Playwright mode'."
+
+      - alert: BrowserDisconnectsHigh
+        expr: increase(serp_harvester_browser_disconnects_total[15m]) > 2
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Chromium disconnected more than twice in 15m"
+          description: "Usually memory pressure or /dev/shm exhaustion. See RUNBOOK.md 'Playwright mode'."
+
       - alert: MetricsEndpointDown
         expr: up{job="serp-harvester"} == 0
         for: 2m

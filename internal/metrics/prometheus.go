@@ -30,6 +30,16 @@ type PrometheusCollector struct {
 	latencyP50         *prometheus.Desc
 	latencyP95         *prometheus.Desc
 	latencyP99         *prometheus.Desc
+
+	// Browser metrics, exported only when counters.Browser is set
+	// (mode: playwright).
+	browserLaunches       *prometheus.Desc
+	browserDisconnects    *prometheus.Desc
+	browserNavTimeouts    *prometheus.Desc
+	browserConsentHandled *prometheus.Desc
+	browserBlocked        *prometheus.Desc
+	browserSessionsOpen   *prometheus.Desc
+	browserSessionsInUse  *prometheus.Desc
 }
 
 // NewPrometheusCollector wraps c for Prometheus scraping. latencies may be
@@ -48,6 +58,14 @@ func NewPrometheusCollector(c *Counters, latencies *LatencyRecorder) *Prometheus
 		latencyP50:         prometheus.NewDesc("serp_harvester_latency_p50_ms", "Approximate p50 fetch latency in milliseconds over the current sample window.", nil, nil),
 		latencyP95:         prometheus.NewDesc("serp_harvester_latency_p95_ms", "Approximate p95 fetch latency in milliseconds over the current sample window.", nil, nil),
 		latencyP99:         prometheus.NewDesc("serp_harvester_latency_p99_ms", "Approximate p99 fetch latency in milliseconds over the current sample window.", nil, nil),
+
+		browserLaunches:       prometheus.NewDesc("serp_harvester_browser_launches_total", "Total Chromium launches, including relaunches after a crash or disconnect.", nil, nil),
+		browserDisconnects:    prometheus.NewDesc("serp_harvester_browser_disconnects_total", "Total unexpected browser disconnects (crash, OOM kill); excludes shutdown.", nil, nil),
+		browserNavTimeouts:    prometheus.NewDesc("serp_harvester_browser_navigation_timeouts_total", "Total browser navigations that exceeded request_timeout.", nil, nil),
+		browserConsentHandled: prometheus.NewDesc("serp_harvester_browser_consent_handled_total", "Total cookie-consent interstitials dismissed via the page's own reject-all form.", nil, nil),
+		browserBlocked:        prometheus.NewDesc("serp_harvester_browser_blocked_total", "Total pages classified as a block the fetcher does not get past, by reason.", []string{"reason"}, nil),
+		browserSessionsOpen:   prometheus.NewDesc("serp_harvester_browser_sessions_open", "Browser sessions (context + page) currently open.", nil, nil),
+		browserSessionsInUse:  prometheus.NewDesc("serp_harvester_browser_sessions_in_use", "Browser sessions currently serving a fetch.", nil, nil),
 	}
 }
 
@@ -64,6 +82,15 @@ func (p *PrometheusCollector) Describe(ch chan<- *prometheus.Desc) {
 		ch <- p.latencyP50
 		ch <- p.latencyP95
 		ch <- p.latencyP99
+	}
+	if p.counters.Browser != nil {
+		ch <- p.browserLaunches
+		ch <- p.browserDisconnects
+		ch <- p.browserNavTimeouts
+		ch <- p.browserConsentHandled
+		ch <- p.browserBlocked
+		ch <- p.browserSessionsOpen
+		ch <- p.browserSessionsInUse
 	}
 }
 
@@ -83,6 +110,19 @@ func (p *PrometheusCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(p.latencyP50, prometheus.GaugeValue, float64(ls.P50.Milliseconds()))
 		ch <- prometheus.MustNewConstMetric(p.latencyP95, prometheus.GaugeValue, float64(ls.P95.Milliseconds()))
 		ch <- prometheus.MustNewConstMetric(p.latencyP99, prometheus.GaugeValue, float64(ls.P99.Milliseconds()))
+	}
+
+	if p.counters.Browser != nil {
+		b := p.counters.Browser.Snapshot()
+		ch <- prometheus.MustNewConstMetric(p.browserLaunches, prometheus.CounterValue, float64(b.Launches))
+		ch <- prometheus.MustNewConstMetric(p.browserDisconnects, prometheus.CounterValue, float64(b.Disconnects))
+		ch <- prometheus.MustNewConstMetric(p.browserNavTimeouts, prometheus.CounterValue, float64(b.NavigationTimeouts))
+		ch <- prometheus.MustNewConstMetric(p.browserConsentHandled, prometheus.CounterValue, float64(b.ConsentHandled))
+		ch <- prometheus.MustNewConstMetric(p.browserBlocked, prometheus.CounterValue, float64(b.BlockedCaptcha), "captcha")
+		ch <- prometheus.MustNewConstMetric(p.browserBlocked, prometheus.CounterValue, float64(b.BlockedConsent), "consent")
+		ch <- prometheus.MustNewConstMetric(p.browserBlocked, prometheus.CounterValue, float64(b.BlockedInterstitial), "interstitial")
+		ch <- prometheus.MustNewConstMetric(p.browserSessionsOpen, prometheus.GaugeValue, float64(b.SessionsOpen))
+		ch <- prometheus.MustNewConstMetric(p.browserSessionsInUse, prometheus.GaugeValue, float64(b.SessionsInUse))
 	}
 }
 

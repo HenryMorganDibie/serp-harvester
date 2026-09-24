@@ -73,12 +73,22 @@ guessing with generic backoff (`TestPool_HonorsRateLimitRetryAfter`).
 
 ## 8. Google response handling
 
-Two fetch paths with very different maturity — see
+Three live fetch paths with very different maturity — see
 [README "Honest limitations"](README.md#honest-limitations) and
 [README "Live mode"](README.md#live-mode) for the tested, specific findings
 on direct-to-Google requests (both a consent interstitial and a
 JS-execution check were observed, neither bypassed). The provider fetch
 path is the one built for real reliability here.
+
+`mode: playwright` renders the page in headless Chromium: it executes the
+JS check, dismisses consent pages via their own "reject all" form, honors
+`Retry-After` on 429, and classifies CAPTCHA / "unusual traffic" /
+persistent interstitial pages as `BlockedError` failures that count against
+proxy health. It never solves or interacts with a CAPTCHA and does no
+fingerprint spoofing. It is verified against local fixtures only, not live
+Google, so its real block rate is unknown; it is an acquisition option, not
+a production-ready direct-to-Google path. See
+[README "Browser mode"](README.md#browser-mode-playwright).
 
 ## 9. AI Overview extraction
 
@@ -93,7 +103,11 @@ including graceful degradation if the follow-up fails. See
 
 Prometheus `/metrics` (throughput, failure/retry/drop counts, AI Overview
 hit rate, parser drift rate, proxy ban rate, latency p50/p95/p99) plus a
-`/healthz` liveness endpoint. Pre-built Grafana dashboard in
+`/healthz` liveness endpoint. `mode: playwright` adds browser metrics
+(launches, unexpected disconnects, navigation timeouts, consent pages
+handled, blocked pages by reason, open/in-use sessions) and two alert rules
+(`BrowserBlockedPagesHigh`, `BrowserDisconnectsHigh`); the Grafana
+dashboard does not chart them yet. Pre-built Grafana dashboard in
 `deploy/grafana/provisioning/`. See
 [README "Observability"](README.md#observability-prometheus-metrics).
 
@@ -113,6 +127,9 @@ start doesn't crash the harvest. Process-level recovery (systemd
 for the model, and [README "Load testing"](README.md#load-testing) for
 measured orchestration throughput well past that number — the real
 constraint at that volume is proxy/provider capacity, not this codebase.
+`mode: playwright` is the exception: each fetch holds a Chromium session
+(roughly 100 to 300MB and seconds of CPU per page), so its capacity is set
+by browser sessions per host, and it has not been load-tested.
 
 ## 13. Security
 
@@ -155,8 +172,10 @@ metrics this codebase actually emits.
 
 The full, honest list is in [README "Honest limitations"](README.md#honest-limitations)
 and is intentionally not duplicated here. In short: direct-to-Google fetching
-is confirmed blocked at the consent/JS-check layer with no CAPTCHA handling
-or headless rendering built (a deliberate scope boundary, not an oversight);
+over plain HTTP is confirmed blocked at the consent/JS-check layer; headless
+rendering now exists (`mode: playwright`) but is unverified against live
+Google, and there is no CAPTCHA handling or evasion on either direct path (a
+deliberate scope boundary, not an oversight);
 the provider fetch path is the one built for real volume; and no number in
 this repository claims a production operating history that doesn't exist —
 see the "Production history" note in the README's top summary.

@@ -85,6 +85,10 @@ falling behind.
 2. In `mode: live`: AI Overview content is frequently JS-rendered and won't
    appear in a plain HTTP fetch at all — see "Honest limitations" in the
    README. This isn't a runbook fix; it's the documented scope boundary.
+3. In `mode: playwright`: the page is rendered, so a zero rate there points
+   at the parser. Its AI Overview selectors target the bundled fixtures,
+   not live Google markup; check `serp_harvester_parser_drift_total` and
+   the archived raw bodies of drift-flagged results.
 
 ## Metrics endpoint itself is unreachable
 
@@ -195,6 +199,58 @@ stream `serp-harvester:queries`).
    - The table has no uniqueness constraint on `(run_id, query)`, so a
      stream entry redelivered after a consumer crash can write a second
      row, so the count can be higher.
+
+## Playwright mode (`mode: playwright`)
+
+Browser mode renders pages; it does not get past CAPTCHAs, blocks or rate
+limits. Most alerts below mean "the target is challenging this egress", and
+the fix is lower volume, different egress, or the provider path, never a
+code workaround.
+
+1. The process exits at startup with `build playwright fetcher: ...`:
+   - `start driver` means the Playwright driver is missing or the wrong
+     version. In Docker, rebuild `deploy/playwright.Dockerfile`; elsewhere
+     run `make playwright-install` with the same `PLAYWRIGHT_DRIVER_PATH` /
+     `PLAYWRIGHT_BROWSERS_PATH` the process uses (systemd's
+     `ProtectHome=true` hides `~/.cache`, see the unit file).
+   - `launch chromium` means the browser or its system libraries are
+     missing; `playwright install --with-deps chromium` installs both.
+2. `BrowserBlockedPagesHigh` fired
+   (`serp_harvester_browser_blocked_total` rising). Check the `reason`
+   label:
+   - `captcha`: the target served a CAPTCHA or "unusual traffic" page. The
+     fetcher never interacts with it. Those failures already push the
+     proxies involved into cooldown (`serp_harvester_proxy_banned_total`).
+     Reduce `rate_per_proxy_rps`, add or change egress, or move this
+     traffic to the provider path.
+   - `consent`: a consent page with no "reject all" form the fetcher
+     recognises. Capture one (run with `browser_headful: true` locally)
+     and compare it with `classifyPage` / `rejectConsentForm` in
+     `internal/fetcher/playwright.go`; the markup may have changed.
+   - `interstitial`: the JS check persisted after rendering. Treat it like
+     `captcha`.
+3. `serp_harvester_browser_navigation_timeouts_total` rising: pages aren't
+   loading within `request_timeout`. Check target or proxy latency first;
+   raise `request_timeout` (30s is typical) only if pages are slow rather
+   than hanging. A `browser_wait_selector` that never matches does not time
+   out a fetch; it shows up as parser drift instead.
+4. `BrowserDisconnectsHigh` fired, or `serp_harvester_browser_launches_total`
+   keeps growing: Chromium is crashing. Usually memory: compare container
+   memory against `browser_pool_size` x 100 to 300MB, and confirm
+   `shm_size` is set (Docker's 64MB `/dev/shm` crashes tabs). Lower
+   `browser_pool_size` before raising limits. Fetches in flight during a
+   crash fail and are retried; the browser relaunches on the next fetch.
+5. Throughput lower than expected: compare
+   `serp_harvester_browser_sessions_in_use` with `browser_pool_size`. If
+   it's pinned at the pool size, workers are waiting for sessions; raising
+   `concurrency` above `browser_pool_size` adds nothing. Many distinct
+   proxy x device x locale combinations also force session churn (visible
+   as `serp_harvester_browser_sessions_open` at the cap with frequent
+   evictions).
+6. Unexpected traffic to Google services from the host, outside the proxy
+   pool: check `browser_executable_path` and `browser_headful`. A full
+   Chrome/Chromium build makes its own background requests to Google;
+   Playwright's headless shell (the default) does not.
 
 ## Known gaps this runbook can't cover yet
 

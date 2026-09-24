@@ -8,6 +8,9 @@
 # -i-have-reviewed-tos on the command line.
 # "provider" calls a third-party SERP data API instead (see provider_* below
 # and the "Third-party provider fetcher" section in README.md).
+# "playwright" renders live_endpoint in headless Chromium and parses the
+# rendered HTML; it also requires -i-have-reviewed-tos and an installed
+# Chromium (`make playwright-install`). See README.md "Browser mode".
 mode: mock
 
 queries:
@@ -60,7 +63,15 @@ proxy_ban_cooldown: 30s
 proxy_strategy: round_robin
 
 live_endpoint: "https://www.google.com/search"
-request_timeout: 10s
+request_timeout: 10s # for mode: playwright, ~30s: it covers page load, the consent step and browser_wait_selector
+
+# Used only when mode: playwright. Uses the same proxies, rate limits,
+# live_endpoint and request_timeout as the other modes.
+browser_pool_size: 4 # max open browser sessions (context + page); workers beyond it wait
+browser_max_session_uses: 50 # recycle a session, and its cookies, after this many fetches
+browser_wait_selector: "" # e.g. "#search": awaited after load; a page without it is still returned and drift-flagged
+browser_executable_path: "" # empty = Playwright's headless shell (recommended); a full Chrome makes its own Google background requests
+browser_headful: false # true shows a window, for local debugging only
 mock_fixture_dir: "internal/parser/testdata"
 
 # "-" means stdout. Set a file path to write JSON-Lines to disk instead.

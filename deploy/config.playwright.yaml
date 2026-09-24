@@ -1,0 +1,45 @@
+# Config for the opt-in `harvester-playwright` service in
+# deploy/docker-compose.yml (`--profile playwright`). Same long-running
+# Redis consumer shape as deploy/config.yaml, but fetching through headless
+# Chromium against live_endpoint.
+#
+# This sends real requests to Google by default. The service only starts
+# fetching once HARVESTER_REVIEWED_TOS=true is set in deploy/.env (the
+# -i-have-reviewed-tos gate). Rendering does not get past CAPTCHAs, consent
+# walls without a reject-all form, or rate limits; see README "Browser mode
+# (Playwright)" for what it does and does not do.
+mode: playwright
+
+queue_backend: redis
+redis_addr: "redis:6379"
+redis_stream: "serp-harvester:queries"
+redis_group: "harvesters"
+redis_consumer: "playwright-1" # unique per replica
+redis_seed_queue: false # never auto-fire queries at a live target on boot
+
+# A browser session is far heavier than an HTTP request: keep concurrency
+# equal to browser_pool_size and the per-proxy rate conservative.
+concurrency: 4
+max_retries: 2
+rate_per_proxy_rps: 0.2
+rate_burst: 1
+proxies: []
+proxy_ban_fails: 3
+proxy_ban_cooldown: 5m
+
+live_endpoint: "https://www.google.com/search"
+request_timeout: 30s # navigation + consent step + wait selector, per fetch
+
+browser_pool_size: 4
+browser_max_session_uses: 50
+# Awaited after load so late-rendered results are captured. "#search" is
+# Google's results container at the time of writing; if it never appears
+# the page is still returned and flagged by drift detection.
+browser_wait_selector: "#search"
+
+sink_backend: postgres
+postgres_dsn_env: POSTGRES_DSN
+
+output_path: "-"
+report_interval: 10s
+metrics_addr: ":9090"

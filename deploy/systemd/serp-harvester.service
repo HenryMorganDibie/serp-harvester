@@ -16,6 +16,14 @@ RestartSec=5s
 # containing e.g. SERPAPI_KEY=..., matching provider_api_key_env in config.
 EnvironmentFile=-/etc/serp-harvester.env
 
+# mode: playwright only: install the driver and Chromium outside the home
+# directory (ProtectHome hides it), e.g. as root:
+#   PLAYWRIGHT_DRIVER_PATH=/opt/ms-playwright-go PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
+#     /opt/serp-harvester/bin/playwright install --with-deps chromium
+# then uncomment these so the harvester finds them:
+#Environment=PLAYWRIGHT_DRIVER_PATH=/opt/ms-playwright-go
+#Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+
 # Basic hardening. Adjust ProtectSystem/ReadWritePaths if output_path
 # writes somewhere other than stdout.
 NoNewPrivileges=true

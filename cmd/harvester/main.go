@@ -5,15 +5,17 @@
 // Mock mode (default) is fully offline and deterministic — safe to run
 // anywhere, including CI. Live mode issues real HTTP requests directly to
 // the target and should only be run deliberately, at low volume, by someone
-// who has reviewed the target site's Terms of Service. Provider mode routes
-// through a third-party SERP data API instead of the target directly. See
-// README.md.
+// who has reviewed the target site's Terms of Service. Playwright mode sends
+// the same real requests through headless Chromium and carries the same
+// requirement. Provider mode routes through a third-party SERP data API
+// instead of the target directly. See README.md.
 package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -35,9 +37,9 @@ import (
 
 func main() {
 	configPath := flag.String("config", "configs/config.example.yaml", "path to YAML config")
-	mode := flag.String("mode", "", "override config mode: mock|live|provider")
+	mode := flag.String("mode", "", "override config mode: mock|live|provider|playwright")
 	queriesFlag := flag.String("queries", "", "comma-separated queries, overrides config")
-	iAcceptLiveRisk := flag.Bool("i-have-reviewed-tos", false, "required to run --mode live")
+	iAcceptLiveRisk := flag.Bool("i-have-reviewed-tos", false, "required to run --mode live or --mode playwright")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -54,14 +56,27 @@ func main() {
 		log.Fatal("no queries configured (set queries: in config or pass -queries)")
 	}
 
-	f, p := buildFetcherAndParser(cfg, iAcceptLiveRisk)
+	counters := &metrics.Counters{}
+	if cfg.Mode == "playwright" {
+		counters.Browser = &metrics.BrowserCounters{}
+	}
+	latencies := metrics.NewLatencyRecorder(10000)
+
+	f, p := buildFetcherAndParser(cfg, iAcceptLiveRisk, counters)
+	// The Playwright fetcher owns a browser process; close it once the
+	// pool has drained, including after SIGINT/SIGTERM.
+	if c, ok := f.(io.Closer); ok {
+		defer func() {
+			if err := c.Close(); err != nil {
+				log.Printf("close fetcher: %v", err)
+			}
+		}()
+	}
 	sink := buildSink(cfg)
 
 	proxyPool := proxy.NewPool(cfg.Proxies, cfg.ProxyBanFails, cfg.ProxyBanCooldown)
 	proxyPool.Strategy = parseProxyStrategy(cfg.ProxyStrategy)
 	limiter := ratelimit.New(cfg.RatePerProxyRPS, cfg.RateBurst)
-	counters := &metrics.Counters{}
-	latencies := metrics.NewLatencyRecorder(10000)
 
 	pool := &worker.Pool{
 		Concurrency: cfg.Concurrency,
@@ -108,7 +123,7 @@ func main() {
 // buildFetcherAndParser picks the fetcher implementation and its matching
 // parser together, since a fetcher's output format (HTML vs. JSON)
 // determines which parser can read it.
-func buildFetcherAndParser(cfg config.Config, iAcceptLiveRisk *bool) (fetcher.Fetcher, worker.Parser) {
+func buildFetcherAndParser(cfg config.Config, iAcceptLiveRisk *bool, counters *metrics.Counters) (fetcher.Fetcher, worker.Parser) {
 	switch cfg.Mode {
 	case "mock":
 		f, err := fetcher.NewMockFromDir(cfg.MockFixtureDir)
@@ -140,8 +155,29 @@ func buildFetcherAndParser(cfg config.Config, iAcceptLiveRisk *bool) (fetcher.Fe
 		f := fetcher.NewProviderFetcher(cfg.ProviderBaseURL, apiKey, cfg.ProviderEngine, cfg.RequestTimeout)
 		return f, parser.NewJSON()
 
+	case "playwright":
+		if !*iAcceptLiveRisk {
+			fmt.Fprintln(os.Stderr, liveModeWarning)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stderr, liveModeBanner(cfg))
+		f, err := fetcher.NewPlaywrightFetcher(fetcher.PlaywrightConfig{
+			Endpoint:       cfg.LiveEndpoint,
+			Timeout:        cfg.RequestTimeout,
+			PoolSize:       cfg.BrowserPoolSize,
+			MaxSessionUses: cfg.BrowserMaxSessionUses,
+			Headless:       !cfg.BrowserHeadful,
+			ExecutablePath: cfg.BrowserExecutablePath,
+			WaitSelector:   cfg.BrowserWaitSelector,
+			Metrics:        counters.Browser,
+		})
+		if err != nil {
+			log.Fatalf("build playwright fetcher: %v (install Chromium with `go run github.com/playwright-community/playwright-go/cmd/playwright install --with-deps chromium`, or set browser_executable_path)", err)
+		}
+		return f, parser.New()
+
 	default:
-		log.Fatalf("unknown mode %q (want mock|live|provider)", cfg.Mode)
+		log.Fatalf("unknown mode %q (want mock|live|provider|playwright)", cfg.Mode)
 		return nil, nil // unreachable
 	}
 }
@@ -229,10 +265,11 @@ func parseProxyStrategy(s string) proxy.Strategy {
 	}
 }
 
-const liveModeWarning = `refusing to run --mode live without -i-have-reviewed-tos
+const liveModeWarning = `refusing to run --mode live or --mode playwright without -i-have-reviewed-tos
 
-Live mode sends real HTTP requests to the configured endpoint (default:
-Google Search). Before running it you should have reviewed:
+Live and playwright modes send real requests to the configured endpoint
+(default: Google Search), playwright through a headless browser. Before
+running either you should have reviewed:
   - The target site's Terms of Service and robots.txt
   - Applicable law in your and the target's jurisdiction
   - Your own risk tolerance for IP blocks / CAPTCHAs at the configured rate
@@ -241,7 +278,7 @@ Re-run with -i-have-reviewed-tos once you have done so.`
 
 func liveModeBanner(cfg config.Config) string {
 	return fmt.Sprintf(
-		"[live mode] endpoint=%s concurrency=%d rate/proxy=%.2f req/s — this WILL make real network requests",
-		cfg.LiveEndpoint, cfg.Concurrency, cfg.RatePerProxyRPS,
+		"[%s mode] endpoint=%s concurrency=%d rate/proxy=%.2f req/s — this WILL make real network requests",
+		cfg.Mode, cfg.LiveEndpoint, cfg.Concurrency, cfg.RatePerProxyRPS,
 	)
 }

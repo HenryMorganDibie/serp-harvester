@@ -11,6 +11,9 @@ accidentally fire against a real target.
 # Direct-to-Google (no key needed, documents the current blocked state):
 HARVESTER_LIVE=true go test ./tests/live/... -run GoogleDirect -v
 
+# Direct-to-Google through headless Chromium (needs `make playwright-install`):
+HARVESTER_LIVE=true go test ./tests/live/... -run Playwright -v
+
 # Real provider smoke test (needs a real key):
 HARVESTER_LIVE=true SERPAPI_KEY=... go test ./tests/live/... -run Provider -v
 ```
@@ -22,6 +25,11 @@ HARVESTER_LIVE=true SERPAPI_KEY=... go test ./tests/live/... -run Provider -v
   return usable results. It's written to keep that finding honest over
   time — if Google's behavior changes and real results start coming back,
   this test logs that loudly rather than silently passing either way.
+- **`TestGooglePlaywright_RecordsOutcome`**: one query through the
+  Playwright fetcher, logging whether Google returned a rendered results
+  page (and whether the fixture-targeted parser matched it), a block page
+  (CAPTCHA, consent, interstitial) or a rate limit. A block is a logged
+  outcome, not a failure, since the fetcher does not bypass blocks.
 - **`TestProvider_RealKeySmokeTest`** — the one test in this repo that
   can't be verified without a real API key. It confirms the JSON field
   mapping in `internal/parser/json_provider.go` (built from public docs)

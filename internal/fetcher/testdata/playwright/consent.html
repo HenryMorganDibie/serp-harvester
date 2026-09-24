@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<!--
+  Synthetic consent interstitial for the Playwright fetcher tests, shaped
+  like the real one only where the fetcher depends on it: two forms posting
+  to a consent save endpoint, distinguished by a hidden set_eom input
+  (true = reject all, false = accept all). The fetcher must pick "reject".
+-->
+<html>
+<head><meta charset="utf-8"><title>Before you continue</title></head>
+<body>
+  <h1>Before you continue</h1>
+  <form action="/save" method="POST">
+    <input type="hidden" name="set_eom" value="true">
+    <input type="hidden" name="continue" value="{{CONTINUE}}">
+    <button type="submit">Reject all</button>
+  </form>
+  <form action="/save" method="POST">
+    <input type="hidden" name="set_eom" value="false">
+    <input type="hidden" name="continue" value="{{CONTINUE}}">
+    <button type="submit">Accept all</button>
+  </form>
+</body>
+</html>

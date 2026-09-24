@@ -8,3 +8,9 @@ scrape_configs:
   - job_name: serp-harvester
     static_configs:
       - targets: ["harvester:9090"]
+  # Only up when the opt-in `playwright` compose profile is running; kept
+  # as its own job so MetricsEndpointDown (job="serp-harvester") doesn't
+  # fire while it's off.
+  - job_name: serp-harvester-playwright
+    static_configs:
+      - targets: ["harvester-playwright:9090"]

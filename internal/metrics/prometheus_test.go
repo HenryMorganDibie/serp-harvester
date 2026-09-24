@@ -100,3 +100,64 @@ func TestServeHTTP_Healthz(t *testing.T) {
 		t.Errorf("expected 200 from /healthz, got %d", resp.StatusCode)
 	}
 }
+
+func TestServeHTTP_BrowserMetricsOnlyWhenEnabled(t *testing.T) {
+	scrape := func(c *Counters) string {
+		srv := httptest.NewServer(ServeHTTP(c, nil))
+		defer srv.Close()
+		resp, err := srv.Client().Get(srv.URL + "/metrics")
+		if err != nil {
+			t.Fatalf("GET /metrics: %v", err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		return string(body)
+	}
+
+	if text := scrape(&Counters{}); strings.Contains(text, "serp_harvester_browser_") {
+		t.Error("browser metrics should be absent outside mode: playwright")
+	}
+
+	b := &BrowserCounters{}
+	b.IncLaunches()
+	b.IncDisconnects()
+	b.IncNavigationTimeouts()
+	b.IncConsentHandled()
+	b.IncBlocked("captcha")
+	b.IncBlocked("captcha")
+	b.IncBlocked("consent")
+	b.IncBlocked("interstitial")
+	b.AddSessionsOpen(3)
+	b.AddSessionsInUse(2)
+	b.AddSessionsInUse(-1)
+
+	text := scrape(&Counters{Browser: b})
+	for _, want := range []string{
+		"serp_harvester_browser_launches_total 1",
+		"serp_harvester_browser_disconnects_total 1",
+		"serp_harvester_browser_navigation_timeouts_total 1",
+		"serp_harvester_browser_consent_handled_total 1",
+		`serp_harvester_browser_blocked_total{reason="captcha"} 2`,
+		`serp_harvester_browser_blocked_total{reason="consent"} 1`,
+		`serp_harvester_browser_blocked_total{reason="interstitial"} 1`,
+		"serp_harvester_browser_sessions_open 3",
+		"serp_harvester_browser_sessions_in_use 1",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("expected metrics output to contain %q, got:\n%s", want, text)
+		}
+	}
+}
+
+func TestBrowserCounters_NilSafe(t *testing.T) {
+	var b *BrowserCounters
+	b.IncLaunches()
+	b.IncBlocked("captcha")
+	b.AddSessionsOpen(1)
+	if s := b.Snapshot(); s != (BrowserSnapshot{}) {
+		t.Errorf("nil snapshot = %+v, want zero", s)
+	}
+}

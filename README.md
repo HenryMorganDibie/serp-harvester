@@ -17,7 +17,8 @@ proxies, no network access required.
 
 - **What it does**: Google SERP collection (organic, featured snippet,
   "people also ask", AI Overview including its page-token follow-up),
-  direct-to-Google or via a third-party provider, behind one interface.
+  direct-to-Google (plain HTTP or headless Chromium) or via a third-party
+  provider, behind one interface.
 - **Deployment**: self-hosted. `docker compose -f deploy/docker-compose.yml up -d`
   runs the full stack (harvester + Redis + Prometheus + Grafana) on your own
   infrastructure. No Apify dependency.
@@ -76,7 +77,7 @@ queue.Source ──▶ worker.Pool (N goroutines)
 (Memory or           │
  Redis Streams)       ├─▶ proxy.Pool.Next()      (health-tracked rotation: round-robin, random, or weighted-by-success-rate)
                        ├─▶ ratelimit.Limiter.Wait (token bucket, keyed per proxy; honors provider Retry-After on 429)
-                       ├─▶ fetcher.Fetcher.Fetch  (mock fixtures, live HTTP, or a third-party provider)
+                       ├─▶ fetcher.Fetcher.Fetch  (mock fixtures, live HTTP, headless Chromium via Playwright, or a third-party provider)
                        ├─▶ worker.Parser.Parse    (HTML or provider-JSON, structured extraction + drift detection)
                        └─▶ store.Sink.Write       (JSON-Lines, or PostgreSQL with JSONB columns)
 
@@ -99,7 +100,7 @@ here to a 10M+/day production system is a matter of:
 | `queue.MemorySource` or `queue.RedisStreamSource`        | Already the same interface Kafka/SQS would sit behind                |
 | JSON-Lines sink, or PostgreSQL with JSONB columns        | Already real; add a warehouse-streaming `Sink` if that's preferred   |
 | Proxy pool with health tracking + 3 rotation strategies  | Already real; point `proxy.Pool.Reload` at a vendor's proxy-list API |
-| Plain `net/http` fetch, or a third-party provider fetch  | Headless rendering for JS-rendered content if going direct-to-Google, or just more provider budget if not |
+| Plain `net/http`, headless Chromium (Playwright), or a third-party provider fetch | Rendering is built (`mode: playwright`); direct-to-Google still needs a compliant answer to CAPTCHAs, blocks and selector maintenance, or just more provider budget |
 | Single process, N goroutines                             | N processes across M hosts, all pointed at the same Redis stream (or Kafka/SQS) |
 | Selectors tuned to fixture HTML                           | Selectors tuned to live Google markup, versioned and monitored for drift (see below) |
 | `println` + Prometheus counters, no alerting              | Alerting rules on top of the same `/metrics` (see `deploy/prometheus/alerts.yml` where present) |
@@ -364,6 +365,8 @@ curl localhost:9090/metrics
 # serp_harvester_failure_total 3
 # serp_harvester_dropped_total 0
 # serp_harvester_retried_total 5
+# mode: playwright adds serp_harvester_browser_* (launches, disconnects,
+# navigation timeouts, consent handled, blocked{reason}, sessions open/in use)
 ```
 
 `internal/metrics.PrometheusCollector` reads the same atomic counters the
@@ -505,6 +508,109 @@ and getting a plain, undisguised HTTP client past them reliably is already
 nontrivial before CAPTCHAs, rate limiting, or volume enter the picture at
 all.
 
+## Browser mode (Playwright)
+
+```bash
+make playwright-install   # Playwright driver + Chromium, pinned to go.mod's playwright-go
+go run ./cmd/harvester -config your-config.yaml -mode playwright -i-have-reviewed-tos
+```
+
+`mode: playwright` (`internal/fetcher/playwright.go`) renders
+`live_endpoint`'s results page in headless Chromium and returns the
+rendered DOM, which goes through the same HTML parser as live mode. It is
+an **acquisition backend only**: it lets content that Google renders with
+JavaScript reach the parser, and it gets past the JS-execution check that
+stops a plain HTTP client (see [Live mode](#live-mode)). It does not make
+direct-to-Google scraping production-ready. Google can and does still
+answer a real browser with CAPTCHAs, "unusual traffic" pages, consent
+walls, rate limits and other blocks, and this mode does not try to get
+past any of them.
+
+What it does:
+
+- **Same pipeline.** It implements `fetcher.Fetcher`; the worker pool,
+  proxy pool, rate limiter, retries, parser, sinks and metrics are
+  unchanged. Each fetch uses the proxy the pool handed out (authenticated
+  proxies included) and waits on the same per-proxy rate limit. There is no
+  second proxy or rate-limit implementation.
+- **Same request semantics.** `q`/`hl`/`gl` are sent exactly as in live
+  mode. The job's locale becomes the browser locale (and so
+  `Accept-Language`), and its device (`desktop`, `mobile`, `tablet`)
+  becomes viewport emulation. The User-Agent is the worker pool's honest
+  `serp-harvester` string, unchanged. `request_timeout` bounds each fetch,
+  and cancellation (shutdown, SIGTERM) aborts the in-flight navigation.
+- **Bounded browser pool.** One Chromium process is shared. Each fetch
+  borrows a session (a browser context plus a page) from a pool capped at
+  `browser_pool_size`, keyed by proxy, device, locale and User-Agent, since
+  those are fixed per context. Sessions are reused, so cookies persist like
+  live mode's cookie jar, and are recycled after `browser_max_session_uses`
+  fetches or any failure. A crashed browser is relaunched on the next fetch.
+  Shutdown closes pages, contexts, the browser and the driver.
+- **Consent pages.** The same `CONSENT` cookie live mode sends is
+  pre-seeded. If a consent page still appears, the fetcher submits that
+  page's own **"reject all"** form, the choice any visitor can make, and
+  continues. A consent page without such a form is reported as blocked.
+- **Blocks are reported, not bypassed.** A CAPTCHA or "unusual traffic"
+  page, a consent page it can't dismiss, or a JS-check interstitial that
+  persists after rendering returns a `*fetcher.BlockedError`. That counts
+  as a failed request against the proxy's health (so a challenged proxy
+  goes into cooldown) and increments `serp_harvester_browser_blocked_total`.
+  A plain 429 returns the usual `RateLimitError`, so `Retry-After` is
+  honored.
+- **Metrics.** Launches, unexpected disconnects, navigation timeouts,
+  consent pages handled, blocked pages by reason, and open/in-use sessions,
+  alongside the existing counters (see [Observability](#observability-prometheus-metrics)).
+
+What it deliberately does not do: CAPTCHA solving, stealth plugins,
+fingerprint spoofing or randomization, patching automation markers, or any
+other anti-bot evasion.
+
+Settings (all optional; existing configs are unaffected):
+
+```yaml
+mode: playwright
+request_timeout: 30s          # per fetch: page load + consent step + wait selector
+browser_pool_size: 4          # max open sessions; workers beyond it wait
+browser_max_session_uses: 50
+browser_wait_selector: "#search"   # awaited after load; if absent the page is still returned and drift-flagged
+browser_executable_path: ""   # empty = Playwright's headless shell (recommended)
+browser_headful: false        # local debugging only
+```
+
+Deployment: `deploy/playwright.Dockerfile` (Debian, Chromium installed at
+build time) and an opt-in `harvester-playwright` Compose service
+(`--profile playwright`); see [deploy/README.md](deploy/README.md).
+
+Tests (`internal/fetcher/playwright_*_test.go`,
+`internal/worker/playwright_pipeline_test.go`) drive real Chromium against
+local `httptest` fixtures only: JS rendering into the parser, query/locale/
+device/User-Agent passthrough, consent reject-all, CAPTCHA reported and never
+submitted, 429 with `Retry-After`, navigation timeout, cancellation, an
+authenticating proxy, the bounded pool, crash recovery, and shutdown. They
+need Chromium, so they run with `SERP_HARVESTER_PLAYWRIGHT=1`
+(`make test-playwright`); CI installs Chromium and runs them.
+
+**Not yet verified against live Google.** Everything above is tested
+against local fixtures. Whether a real Google results page renders into
+results, which blocks appear, and at what rate, depends on egress IP,
+proxies, locale and volume, and has not been measured.
+`HARVESTER_LIVE=true go test ./tests/live/... -run Playwright -v` records
+what actually comes back, the same way the live-mode test does.
+
+Known limitations of this mode:
+
+- The parser's selectors still target the bundled fixtures, not live Google
+  markup (see [Honest limitations](#honest-limitations) item 1). Rendered
+  Google pages will be drift-flagged until the selectors are retargeted.
+- A browser session costs roughly 100 to 300MB of memory and far more CPU
+  than an HTTP request; plan capacity per session, not per request.
+- Use Playwright's headless shell (the default). A full Chrome/Chromium
+  build (`browser_executable_path` pointing at one, or `browser_headful`)
+  makes its own background requests to Google services that bypass the
+  per-context proxy and the rate limiter.
+- One browser per process: a Chromium crash fails that process's in-flight
+  fetches (they are retried) before the relaunch.
+
 ## Honest limitations
 
 Overselling readiness here would be a worse outcome than being precise about
@@ -527,16 +633,17 @@ client's volume, not just a pitch:
 2. **AI Overview content is frequently rendered client-side.** A
    request/response HTTP fetch (what `HTTPFetcher` does) won't see content
    that Google's frontend renders via JS after the initial page load in
-   some surfaces. A production system going direct-to-Google needs headless
-   browser rendering (e.g. Playwright) for those cases — intentionally not
-   bundled here so this repo doesn't ship a Google-specific
-   rendering/evasion toolkit without a client and a scope behind it. The
-   provider fetcher sidesteps this too: providers that support AI Overview
+   some surfaces. [Browser mode](#browser-mode-playwright) now renders
+   those pages in headless Chromium, but only as acquisition: it ships no
+   evasion toolkit, the AI Overview selectors are still fixture-targeted,
+   and rendering against live Google is not yet verified. The provider
+   fetcher sidesteps this too: providers that support AI Overview
    extraction return it as structured JSON already (see
    `internal/parser/json_provider.go`).
 
 3. **No CAPTCHA handling or anti-detection measures are implemented** for
-   the direct-to-Google live mode. At real volume, direct-to-Google request
+   either direct-to-Google mode (`live` or `playwright`). A real browser is
+   still challenged; browser mode reports those pages as blocked and stops. At real volume, direct-to-Google request
    patterns get challenged. Solving that (compliant CAPTCHA-handling,
    residential proxy rotation, request fingerprint normalization) is scoped,
    budgeted, engagement-specific work if going direct — the
@@ -547,8 +654,8 @@ client's volume, not just a pitch:
    how to operate at volume against Google directly (vs. via a licensed
    data provider) is a legal/business decision for the client, made with
    their counsel — this repo surfaces that decision point (the
-   `-i-have-reviewed-tos` flag for live mode) rather than deciding it for
-   you.
+   `-i-have-reviewed-tos` flag, required for both live and playwright
+   modes) rather than deciding it for you.
 
 ## Scaling to 10M+ requests/day
 
@@ -564,10 +671,12 @@ number requires a different architecture from what's here — it requires:
 - a queue and sink that can sustain that throughput (Redis Streams is
   already wired in; Kafka/SQS are the same `queue.Source`/`store.Sink`
   interface if preferred),
-- for direct-to-Google mode specifically: the live-mode gaps above
-  (rendering, CAPTCHA handling, selector maintenance) closed for the
-  client's actual target markup and locales — or, more realistically at
-  this volume, the provider fetcher instead.
+- for direct-to-Google mode specifically: the live-mode gaps above closed
+  for the client's actual target markup and locales. Rendering now exists
+  (`mode: playwright`), but CAPTCHA/block handling and selector
+  maintenance do not, and a browser session costs far more than an HTTP
+  request, so ~116 req/s rendered means a large Chromium fleet. More
+  realistically at this volume: the provider fetcher instead.
 
 ## Layout
 
@@ -581,8 +690,8 @@ internal/scheduler/     Cron-based recurring harvests — also a pure queue.Prod
 internal/queue/         Job sources/producer: in-memory, and Redis Streams for multi-process/host scaling
 internal/proxy/         Proxy pool: health tracking, dynamic reload, 3 rotation strategies
 internal/ratelimit/     Per-key token-bucket rate limiter
-internal/fetcher/       Fetcher interface + Mock, direct HTTP, and third-party provider implementations,
-                        plus RateLimitError/Retry-After parsing (errors.go)
+internal/fetcher/       Fetcher interface + Mock, direct HTTP, headless Chromium (playwright.go), and
+                        third-party provider implementations, plus RateLimitError/Retry-After parsing (errors.go)
 internal/parser/        HTML and provider-JSON → SerpResult extraction, with drift detection
 internal/worker/        The pool tying fetch → parse → sink together with retry/backoff
 internal/metrics/       Run counters, latency percentile tracking, periodic reporting,
@@ -590,7 +699,8 @@ internal/metrics/       Run counters, latency percentile tracking, periodic repo
 internal/store/         Sink interface + JSON-Lines and PostgreSQL implementations
 internal/config/        YAML config loading
 configs/                Example config
-deploy/                 Docker Compose (harvester+Redis+Prometheus+Grafana), systemd unit, Dockerfile
+deploy/                 Docker Compose (harvester+Redis+Prometheus+Grafana, opt-in Playwright harvester),
+                        systemd units, Dockerfiles (Alpine default, Debian+Chromium for mode: playwright)
 tests/live/             Real-network integration tests, gated behind HARVESTER_LIVE=true (never run in CI)
 ```
 
