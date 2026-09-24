@@ -7,9 +7,11 @@ nothing here is asserted without something to point at.
 ## Which working scrapers do you currently have, built/operated by you?
 
 My current working SERP collection system is this distributed Go pipeline:
-self-hosted worker pool, Redis Streams for horizontal scaling, proxy
-rotation, rate limiting, structured extraction with drift detection, and
-Prometheus observability, running end to end today. See
+self-hosted worker pool, Redis Streams for horizontal scaling, a proxy pool
+with health tracking and three rotation strategies, rate limiting that
+honors a provider's own `Retry-After` signal, structured extraction with
+drift detection, PostgreSQL or JSON-Lines persistence with run/locale/device
+metadata, and Prometheus observability — running end to end today. See
 [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md) for the full
 architecture-to-operations breakdown. What it hasn't done yet is operate
 against your specific volume in production — see the volume question below
@@ -27,7 +29,10 @@ Both, behind one interface (`internal/fetcher.Fetcher`):
 | AI Overview (page-token follow-up) | Not applicable — this is a provider-specific async mechanism | Built and tested (`internal/fetcher/provider_test.go`) |
 | Consent/session handling   | Cookie jar implemented; **confirmed insufficient** — see below | Not applicable — provider handles this |
 | CAPTCHA / bot-detection handling | Not implemented (deliberately — see [README "Honest limitations"](README.md#honest-limitations)) | Handled by the provider as their product |
-| Proxy rotation & rate limiting | Built (`internal/proxy`, `internal/ratelimit`) | Built, same code path |
+| Proxy rotation & rate limiting | Built: health-tracked pool, 3 rotation strategies, dynamic reload (`internal/proxy`, `internal/ratelimit`) | Built, same code path |
+| Rate-limit (429) handling  | N/A — direct mode doesn't currently distinguish 429 from other errors | Built: parses `Retry-After`, worker waits the exact duration instead of guessing |
+| Locale/device targeting    | Built: `gl`/`hl` params passed through | Built: `gl`/`hl`/`device` params passed through |
+| Persistent storage          | PostgreSQL (JSONB columns) or JSON-Lines, either fetch path | Same |
 | Self-hostable               | Yes | Yes |
 | Third-party dependency      | None | The provider itself |
 | Who owns the ToS/legal risk | You, if used at volume | The provider, priced into their product |
@@ -57,9 +62,10 @@ operation with a track record. What exists instead:
   sweep table with real measured numbers, currently up to ~15,000 req/s at
   concurrency 800 — well past the ~116 req/s that 10M/day requires.
 - **Soak test**: a sustained run tracking memory, goroutine count, and
-  throughput consistency over time — see the latest results in
-  [README "Load testing"](README.md#load-testing) for duration actually run
-  and outcome.
+  throughput consistency over time — see [README "Load testing"](README.md#load-testing)
+  for the actual duration run and outcome (a 90-minute run was in progress
+  as this document was last updated; check README for the completed result
+  rather than this file, which isn't updated live).
 - **Production history**: none to report. Once this runs against real
   traffic (via the provider path), this section gets updated with actual
   dates, actual daily volume, and actual success rates — not before.
@@ -71,6 +77,13 @@ stack (harvester + Redis + Prometheus + Grafana) and a systemd unit for
 bare-metal/VM deployment, both running entirely on infrastructure you
 control. `docker compose -f deploy/docker-compose.yml up -d` is the whole
 deployment. See [`deploy/README.md`](deploy/README.md).
+
+Result storage is your choice: JSON-Lines for simplicity, or PostgreSQL
+(`sink_backend: postgres`) if you want to query results directly — by run,
+by query, by date range, by whether AI Overview was present — with the
+parsed fields stored as native JSONB columns, not an opaque blob. Verified
+against a real Postgres instance, not just mocked (`internal/store/postgres_test.go`,
+plus an end-to-end CLI run whose output was queried directly).
 
 The only external dependency, if you choose `mode: provider`, is API calls
 to the SERP data vendor you pick — the same shape as calling any other paid

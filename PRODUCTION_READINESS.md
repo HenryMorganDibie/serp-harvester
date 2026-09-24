@@ -43,16 +43,28 @@ test coverage was actually built.
 
 ## 6. Proxy management
 
-Round-robin rotation with failure-threshold cooldown (`internal/proxy`).
-`serp_harvester_proxy_banned_total` tracks ban events. What's not included:
-sourcing proxies from a vendor automatically — the proxy list is static
-config today (see RUNBOOK's "Known gaps").
+Health-tracked pool (`internal/proxy`): per-proxy success/failure counts,
+failure-threshold cooldown, and a choice of three rotation strategies
+(round-robin, random, weighted-by-success-rate). `Pool.Reload(urls)`
+reconfigures the proxy list at runtime without dropping accumulated health
+stats for URLs that stay — the seam for pointing at a vendor's proxy-list
+API instead of static config. Authenticated proxies
+(`http://user:pass@host:port`) work with no special handling; confirmed by
+an integration test that checks the header actually arrives at a fake proxy
+server, not just that Go's docs say it should
+(`TestHTTPFetcher_AuthenticatedProxy`). `serp_harvester_proxy_banned_total`
+tracks ban events for alerting. What's not included: automatically sourcing
+proxies from a vendor's API — `Reload` is the integration point, but nothing
+calls it on a schedule yet.
 
 ## 7. Rate limiting
 
-Per-key (per-proxy, or per-direct-egress-IP) token bucket
-(`internal/ratelimit`), so concurrency and request rate are independently
-tunable.
+Two layers: a per-key (per-proxy, or per-direct-egress-IP) token bucket
+(`internal/ratelimit`) for self-imposed pacing, and provider-signaled
+rate-limit handling for the provider fetch path — a 429 is parsed into a
+`*fetcher.RateLimitError` carrying the provider's own `Retry-After` value,
+and the worker pool waits that exact duration before retrying instead of
+guessing with generic backoff (`TestPool_HonorsRateLimitRetryAfter`).
 
 ## 8. Google response handling
 
@@ -99,8 +111,9 @@ constraint at that volume is proxy/provider capacity, not this codebase.
 
 ## 13. Security
 
-- Provider API keys are read from environment variables (`provider_api_key_env`),
-  never written to config files or committed — see `.env.example`.
+- Provider API keys and the Postgres DSN are both read from environment
+  variables (`provider_api_key_env`, `postgres_dsn_env`), never written to
+  config files or committed — see `.env.example`.
 - The systemd unit runs as a dedicated non-root user with
   `NoNewPrivileges`/`ProtectSystem` hardening.
 - No secrets are baked into the Docker image (`deploy/Dockerfile`).
@@ -110,9 +123,14 @@ constraint at that volume is proxy/provider capacity, not this codebase.
 
 ## 14. Data retention
 
-Not addressed by this codebase. The `store.Sink` interface is where a
-retention-aware sink (e.g., a warehouse writer with a TTL policy) plugs in;
-the bundled `JSONLSink` has no retention logic of its own.
+Two sinks, two answers. `JSONLSink` has no retention logic of its own — it's
+whatever file/log rotation you put around it. `PostgresSink` stores every
+result as a row with a `created_at` timestamp, so retention is a matter of a
+scheduled `DELETE ... WHERE created_at < ...` or a partition-based policy —
+neither is included here, since retention windows are a client policy
+decision, not something to hardcode. The `store.Sink` interface remains the
+integration point for either a custom retention-aware sink or a
+warehouse-streaming one.
 
 ## 15. Disaster recovery
 
