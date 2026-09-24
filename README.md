@@ -577,8 +577,8 @@ browser_executable_path: ""   # empty = Playwright's headless shell (recommended
 browser_headful: false        # local debugging only
 ```
 
-Deployment: `deploy/playwright.Dockerfile` (Debian, Chromium installed at
-build time) and an opt-in `harvester-playwright` Compose service
+Deployment: `deploy/playwright.Dockerfile` (official Playwright base image
+with Chromium preinstalled) and an opt-in `harvester-playwright` Compose service
 (`--profile playwright`); see [deploy/README.md](deploy/README.md).
 
 Tests (`internal/fetcher/playwright_*_test.go`,
@@ -700,7 +700,7 @@ internal/store/         Sink interface + JSON-Lines and PostgreSQL implementatio
 internal/config/        YAML config loading
 configs/                Example config
 deploy/                 Docker Compose (harvester+Redis+Prometheus+Grafana, opt-in Playwright harvester),
-                        systemd units, Dockerfiles (Alpine default, Debian+Chromium for mode: playwright)
+                        systemd units, Dockerfiles (Alpine default, official Playwright image for mode: playwright)
 tests/live/             Real-network integration tests, gated behind HARVESTER_LIVE=true (never run in CI)
 ```
 

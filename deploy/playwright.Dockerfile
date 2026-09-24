@@ -1,13 +1,14 @@
 # Harvester image for `mode: playwright` (headless Chromium). Kept separate
-# from deploy/Dockerfile because Chromium needs glibc and ~40 system
-# libraries, which roughly adds 600MB to an image the mock, live and
-# provider modes don't need.
+# from deploy/Dockerfile because Chromium and its system libraries add well
+# over 1GB to an image the mock, live and provider modes don't need.
 #
-# The Playwright driver and Chromium are installed at build time by
-# scripts/install-playwright.sh, whose driver version a unit test ties to
-# the playwright-go version in go.mod, so the driver, the browser build and
-# the Go bindings always match. Nothing is downloaded at runtime. No
-# credentials are baked in.
+# Based on Microsoft's official Playwright image for the exact driver
+# version playwright-go in go.mod expects, which already contains Chromium,
+# its system libraries and Node.js. The build therefore runs no apt and
+# downloads no browsers; it only adds the Playwright driver (a checksum-
+# pinned npm package, see scripts/install-playwright.sh). A unit test keeps
+# this tag, the script and go.mod on the same version. Nothing is downloaded
+# at runtime. No credentials are baked in.
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -15,21 +16,18 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/harvester ./cmd/harvester
 
-# Debian 12 is a Playwright-supported distribution for `--with-deps`; its
-# nodejs (18) meets the driver's Node >= 18 requirement.
-FROM debian:bookworm-slim
-ENV PLAYWRIGHT_DRIVER_PATH=/opt/ms-playwright-go \
-    PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+FROM mcr.microsoft.com/playwright:v1.60.0-noble
+# The base image sets PLAYWRIGHT_BROWSERS_PATH=/ms-playwright (browsers
+# preinstalled); the driver goes next to it.
+ENV PLAYWRIGHT_DRIVER_PATH=/opt/ms-playwright-go
 COPY scripts/install-playwright.sh /tmp/install-playwright.sh
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl nodejs \
- && sh /tmp/install-playwright.sh --with-deps \
- && rm -rf /var/lib/apt/lists/* /tmp/install-playwright.sh \
- && chmod -R a+rX /opt/ms-playwright /opt/ms-playwright-go \
- && useradd --uid 10001 --create-home harvester
+RUN PLAYWRIGHT_SKIP_BROWSER_INSTALL=1 sh /tmp/install-playwright.sh \
+ && rm /tmp/install-playwright.sh \
+ && chmod -R a+rX /opt/ms-playwright-go
 WORKDIR /app
 COPY --from=build /out/harvester /app/harvester
 COPY internal/parser/testdata /app/internal/parser/testdata
-USER harvester
+# Unprivileged user provided by the base image.
+USER pwuser
 ENTRYPOINT ["/app/harvester"]
 CMD ["-config", "/app/config.yaml"]

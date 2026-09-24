@@ -159,4 +159,14 @@ func TestInstallScript_MatchesPlaywrightGoDriverVersion(t *testing.T) {
 	if got := string(m[1]); got != d.Version {
 		t.Errorf("install script installs driver %s, but playwright-go in go.mod expects %s; update PLAYWRIGHT_VERSION and PLAYWRIGHT_CORE_SHA512", got, d.Version)
 	}
+
+	// The Docker image's preinstalled browsers must match the same version.
+	dockerfile, err := os.ReadFile("../../deploy/playwright.Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "FROM mcr.microsoft.com/playwright:v" + d.Version + "-"
+	if !regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(want)).Match(dockerfile) {
+		t.Errorf("deploy/playwright.Dockerfile must be based on %s... to match playwright-go %s", want, d.Version)
+	}
 }

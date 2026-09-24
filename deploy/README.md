@@ -66,10 +66,11 @@ change, not new code.)
 ### Headless-browser harvester (`mode: playwright`, opt-in)
 
 The `harvester-playwright` service is behind a Compose profile, so a plain
-`up` never starts it. It builds `deploy/playwright.Dockerfile` (Debian, with
-the Playwright driver and Chromium installed at build time by
-`scripts/install-playwright.sh`, matched to the playwright-go version in
-`go.mod`, so nothing downloads at runtime)
+`up` never starts it. It builds `deploy/playwright.Dockerfile`, based on
+Microsoft's official `mcr.microsoft.com/playwright` image for the driver
+version `go.mod` expects (Chromium and its libraries preinstalled, so the
+build runs no apt and downloads no browsers; only the driver is added, via
+`scripts/install-playwright.sh`; nothing downloads at runtime)
 and runs `deploy/config.playwright.yaml`: a Redis consumer rendering
 `live_endpoint` in headless Chromium, with `redis_seed_queue: false` so it
 never fires queries on boot.
