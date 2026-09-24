@@ -151,6 +151,21 @@ as their product. Plugging into one means the pipeline being delivered here
 this codebase, while the legally risky edge — automated querying of Google
 directly — is a paid vendor's product, not code written here to defeat it.
 
+**AI Overview's documented two-step fetch is handled.** SerpApi documents
+that AI Overview content sometimes comes back as only a `page_token` (valid
+~4 minutes) rather than inline `text_blocks`, requiring a follow-up request
+with `engine=google_ai_overview&page_token=...`. `ProviderFetcher.Fetch`
+detects this automatically, makes the follow-up request, and merges the
+resolved content back in before `JSONParser` ever sees the body — so the
+two-step flow is invisible to everything downstream. If the follow-up fails
+(expired token, network error) the original body is still returned
+unmodified: organic results and everything else still parse, and that
+query's result just comes back with no AI Overview, the same as if the SERP
+genuinely had none. See `TestProviderFetcher_ResolvesAIOverviewPageToken`,
+`_InlineAIOverviewSkipsFollowUp`, and `_AIOverviewFollowUpFailureIsNonFatal`
+in `internal/fetcher/provider_test.go` — verified against a synthetic
+two-request fixture, per the same no-real-key caveat below.
+
 **No API key yet? Nothing else in this repo needs one.** Mock mode requires
 none, `go test ./...` never touches the network, and
 `internal/fetcher/provider_test.go` / `internal/parser/json_provider_test.go`
@@ -238,14 +253,27 @@ That last point is a deliberate scope boundary, not an oversight — see
 beyond light, occasional direct queries.
 
 **Tested result:** even with the cookie jar and a pre-seeded consent cookie,
-a live request against `https://www.google.com/search` from this
-environment still came back as the "Before you continue to Google Search"
-consent interstitial, not a results page — confirmed by inspecting the raw
-response (status 200, page title matches the interstitial, no results
-markup present). That's reported here rather than glossed over: getting a
-plain, undisguised HTTP client past Google's consent/session flow reliably
-is already nontrivial, before CAPTCHAs, rate limiting, or volume enter the
-picture at all.
+live requests against `https://www.google.com/search` from this environment
+never reached a results page — confirmed by inspecting the raw response
+each time. Two different outcomes were observed across separate attempts,
+neither of which is real search results:
+
+1. The "Before you continue to Google Search" consent interstitial (status
+   200, page title matches, no results markup).
+2. A JavaScript-execution check (`/httpservice/retry/enablejs`, "click here
+   if you are not redirected") — no consent form present at all, no cookie
+   or header fixes this one, since it requires an actual JS engine to
+   execute and follow through, which is browser-automation territory, not a
+   fetch-layer change.
+
+Persisting whatever cookies Google's own responses set (`SEARCH_SAMESITE`,
+`AEC`, `__Secure-ENID`) across repeated requests — ordinary cookie-jar
+behavior, not fabricating anything — did not change either outcome. That's
+reported here rather than glossed over: this isn't a single small gap with
+one fix, it's Google's layered defenses doing what they're designed to do,
+and getting a plain, undisguised HTTP client past them reliably is already
+nontrivial before CAPTCHAs, rate limiting, or volume enter the picture at
+all.
 
 ## Honest limitations
 
