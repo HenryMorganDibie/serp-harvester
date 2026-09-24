@@ -5,6 +5,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"log"
 	"math/rand"
 	"time"
@@ -83,11 +84,23 @@ func (p *Pool) runWorker(ctx context.Context, jobs <-chan queue.Job) {
 
 func (p *Pool) process(ctx context.Context, job queue.Job) {
 	var lastErr error
+	var rateLimitDelay time.Duration // set when the target tells us how long to wait, honored instead of generic backoff
 
 	for attempt := 0; attempt <= p.MaxRetries; attempt++ {
 		if attempt > 0 {
 			p.Metrics.IncRetried()
-			backoff(attempt)
+			if rateLimitDelay > 0 {
+				select {
+				case <-time.After(rateLimitDelay):
+				case <-ctx.Done():
+					p.Metrics.IncDropped()
+					log.Printf("worker: job %q dropped waiting out rate limit: %v", job.Query, ctx.Err())
+					return
+				}
+				rateLimitDelay = 0
+			} else {
+				backoff(attempt)
+			}
 		}
 
 		px, err := p.ProxyPool.Next()
@@ -120,6 +133,10 @@ func (p *Pool) process(ctx context.Context, job queue.Job) {
 		if err != nil {
 			lastErr = err
 			p.Metrics.IncFailure()
+			var rlErr *fetcher.RateLimitError
+			if errors.As(err, &rlErr) && rlErr.RetryAfter > 0 {
+				rateLimitDelay = rlErr.RetryAfter
+			}
 			continue
 		}
 		if p.Latencies != nil {

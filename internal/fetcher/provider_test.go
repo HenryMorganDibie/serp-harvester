@@ -3,6 +3,7 @@ package fetcher
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -55,6 +56,69 @@ func TestProviderFetcher_NonOKStatus(t *testing.T) {
 	f := NewProviderFetcher(srv.URL, "bad-key", "google", 5*time.Second)
 	if _, err := f.Fetch(context.Background(), Request{Query: "q"}); err == nil {
 		t.Fatal("expected an error for a non-200 status")
+	}
+}
+
+func TestProviderFetcher_RateLimitWithRetryAfterSeconds(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":"rate limit exceeded"}`))
+	}))
+	defer srv.Close()
+
+	f := NewProviderFetcher(srv.URL, "test-key", "google", 5*time.Second)
+	_, err := f.Fetch(context.Background(), Request{Query: "q"})
+
+	var rlErr *RateLimitError
+	if !errors.As(err, &rlErr) {
+		t.Fatalf("expected a *RateLimitError, got %v (%T)", err, err)
+	}
+	if rlErr.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("expected status 429, got %d", rlErr.StatusCode)
+	}
+	if rlErr.RetryAfter != 30*time.Second {
+		t.Errorf("expected RetryAfter=30s, got %v", rlErr.RetryAfter)
+	}
+}
+
+func TestProviderFetcher_RateLimitWithRetryAfterHTTPDate(t *testing.T) {
+	future := time.Now().Add(45 * time.Second).UTC().Format(http.TimeFormat)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", future)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	f := NewProviderFetcher(srv.URL, "test-key", "google", 5*time.Second)
+	_, err := f.Fetch(context.Background(), Request{Query: "q"})
+
+	var rlErr *RateLimitError
+	if !errors.As(err, &rlErr) {
+		t.Fatalf("expected a *RateLimitError, got %v (%T)", err, err)
+	}
+	// Allow a few seconds of slack for HTTP-date's 1-second resolution and test execution time.
+	if rlErr.RetryAfter < 40*time.Second || rlErr.RetryAfter > 46*time.Second {
+		t.Errorf("expected RetryAfter near 45s, got %v", rlErr.RetryAfter)
+	}
+}
+
+func TestProviderFetcher_RateLimitWithoutRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	f := NewProviderFetcher(srv.URL, "test-key", "google", 5*time.Second)
+	_, err := f.Fetch(context.Background(), Request{Query: "q"})
+
+	var rlErr *RateLimitError
+	if !errors.As(err, &rlErr) {
+		t.Fatalf("expected a *RateLimitError, got %v (%T)", err, err)
+	}
+	if rlErr.RetryAfter != 0 {
+		t.Errorf("expected RetryAfter=0 when no header given, got %v", rlErr.RetryAfter)
 	}
 }
 

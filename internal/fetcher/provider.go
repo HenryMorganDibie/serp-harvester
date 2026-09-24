@@ -49,9 +49,13 @@ func (f *ProviderFetcher) Fetch(ctx context.Context, req Request) (*Response, er
 	q := url.Values{}
 	q.Set("engine", f.Engine)
 	q.Set("q", req.Query)
-	body, status, err := f.doGet(ctx, req.ProxyURL, q)
+	body, status, headers, err := f.doGet(ctx, req.ProxyURL, q)
 	if err != nil {
 		return nil, fmt.Errorf("provider fetcher: request failed: %w", err)
+	}
+	if status == http.StatusTooManyRequests {
+		retryAfter, _ := parseRetryAfter(headers.Get("Retry-After"))
+		return nil, &RateLimitError{StatusCode: status, RetryAfter: retryAfter, Body: string(body)}
 	}
 	if status != http.StatusOK {
 		return nil, fmt.Errorf("provider fetcher: unexpected status %d: %s", status, string(body))
@@ -118,7 +122,7 @@ func (f *ProviderFetcher) fetchAIOverviewPage(ctx context.Context, proxyURL, pag
 	q := url.Values{}
 	q.Set("engine", "google_ai_overview")
 	q.Set("page_token", pageToken)
-	body, status, err := f.doGet(ctx, proxyURL, q)
+	body, status, _, err := f.doGet(ctx, proxyURL, q)
 	if err != nil {
 		return nil, fmt.Errorf("ai_overview follow-up request failed: %w", err)
 	}
@@ -140,13 +144,15 @@ func (f *ProviderFetcher) fetchAIOverviewPage(ctx context.Context, proxyURL, pag
 }
 
 // doGet performs one GET against BaseURL with params plus engine/api_key
-// conventions applied, honoring proxyURL if set.
-func (f *ProviderFetcher) doGet(ctx context.Context, proxyURL string, params url.Values) ([]byte, int, error) {
+// conventions applied, honoring proxyURL if set. It returns the response
+// headers alongside the body/status so callers can read signals like
+// Retry-After without a second round trip.
+func (f *ProviderFetcher) doGet(ctx context.Context, proxyURL string, params url.Values) ([]byte, int, http.Header, error) {
 	client := &http.Client{Timeout: f.Timeout}
 	if proxyURL != "" {
 		pu, err := url.Parse(proxyURL)
 		if err != nil {
-			return nil, 0, fmt.Errorf("invalid proxy url: %w", err)
+			return nil, 0, nil, fmt.Errorf("invalid proxy url: %w", err)
 		}
 		client.Transport = &http.Transport{Proxy: http.ProxyURL(pu)}
 	}
@@ -158,20 +164,20 @@ func (f *ProviderFetcher) doGet(ctx context.Context, proxyURL string, params url
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, 0, fmt.Errorf("build request: %w", err)
+		return nil, 0, nil, fmt.Errorf("build request: %w", err)
 	}
 	httpReq.Header.Set("Accept", "application/json")
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
 	if err != nil {
-		return nil, 0, fmt.Errorf("read body: %w", err)
+		return nil, 0, nil, fmt.Errorf("read body: %w", err)
 	}
 
-	return body, resp.StatusCode, nil
+	return body, resp.StatusCode, resp.Header, nil
 }
