@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/HenryMorganDibie/serp-harvester/internal/config"
 	"github.com/HenryMorganDibie/serp-harvester/internal/fetcher"
@@ -54,18 +55,7 @@ func main() {
 	}
 
 	f, p := buildFetcherAndParser(cfg, iAcceptLiveRisk)
-
-	var sink store.Sink
-	if cfg.OutputPath == "-" || cfg.OutputPath == "" {
-		sink = store.NewJSONLSink(os.Stdout)
-	} else {
-		out, err := os.Create(cfg.OutputPath)
-		if err != nil {
-			log.Fatalf("create output file: %v", err)
-		}
-		defer out.Close()
-		sink = store.NewJSONLSink(out)
-	}
+	sink := buildSink(cfg)
 
 	proxyPool := proxy.NewPool(cfg.Proxies, cfg.ProxyBanFails, cfg.ProxyBanCooldown)
 	proxyPool.Strategy = parseProxyStrategy(cfg.ProxyStrategy)
@@ -153,6 +143,40 @@ func buildFetcherAndParser(cfg config.Config, iAcceptLiveRisk *bool) (fetcher.Fe
 	default:
 		log.Fatalf("unknown mode %q (want mock|live|provider)", cfg.Mode)
 		return nil, nil // unreachable
+	}
+}
+
+// buildSink picks the result sink: JSON-Lines (to OutputPath, default
+// stdout) or PostgreSQL. The DSN is read from the environment, never from
+// config, the same pattern as the provider API key.
+func buildSink(cfg config.Config) store.Sink {
+	switch cfg.SinkBackend {
+	case "", "jsonl":
+		if cfg.OutputPath == "-" || cfg.OutputPath == "" {
+			return store.NewJSONLSink(os.Stdout)
+		}
+		out, err := os.Create(cfg.OutputPath)
+		if err != nil {
+			log.Fatalf("create output file: %v", err)
+		}
+		return store.NewJSONLSink(out)
+
+	case "postgres":
+		dsn := os.Getenv(cfg.PostgresDSNEnv)
+		if dsn == "" {
+			log.Fatalf("sink_backend: postgres requires the %s environment variable to be set", cfg.PostgresDSNEnv)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		sink, err := store.NewPostgresSink(ctx, dsn)
+		if err != nil {
+			log.Fatalf("build postgres sink: %v", err)
+		}
+		return sink
+
+	default:
+		log.Fatalf("unknown sink_backend %q (want jsonl|postgres)", cfg.SinkBackend)
+		return nil // unreachable
 	}
 }
 

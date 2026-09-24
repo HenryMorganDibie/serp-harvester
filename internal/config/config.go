@@ -55,6 +55,14 @@ type Config struct {
 	ProviderAPIKeyEnv string `yaml:"provider_api_key_env"`
 	ProviderEngine    string `yaml:"provider_engine"`
 
+	// SinkBackend selects the result sink: "jsonl" (default, writes to
+	// OutputPath) or "postgres" (structured storage, see PostgresDSNEnv).
+	SinkBackend string `yaml:"sink_backend"`
+	// PostgresDSNEnv names the environment variable holding the Postgres
+	// connection string, read the same way ProviderAPIKeyEnv is — never
+	// written to this file.
+	PostgresDSNEnv string `yaml:"postgres_dsn_env"`
+
 	OutputPath     string        `yaml:"output_path"`
 	ReportInterval time.Duration `yaml:"report_interval"`
 
@@ -84,6 +92,8 @@ func Default() Config {
 		RequestTimeout:   10 * time.Second,
 		MockFixtureDir:   "internal/parser/testdata",
 		ProviderEngine:   "google",
+		SinkBackend:      "jsonl",
+		PostgresDSNEnv:   "POSTGRES_DSN",
 		OutputPath:       "-", // stdout
 		ReportInterval:   2 * time.Second,
 	}
