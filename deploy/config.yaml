@@ -34,7 +34,7 @@ provider_api_key_env: "SERPAPI_KEY"
 provider_engine: "google"
 
 sink_backend: postgres
-postgres_dsn_env: POSTGRES_DSN # set by docker-compose.yml from POSTGRES_PASSWORD in your .env
+postgres_dsn_env: POSTGRES_DSN # set by docker-compose.yml; password comes from PGPASSWORD (POSTGRES_PASSWORD in your .env)
 
 output_path: "-"
 report_interval: 10s

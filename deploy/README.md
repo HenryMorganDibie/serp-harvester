@@ -7,7 +7,7 @@ hosted scraping API involved.
 
 ```bash
 cp deploy/.env.example deploy/.env
-# edit deploy/.env: set POSTGRES_PASSWORD at minimum
+# edit deploy/.env: set POSTGRES_PASSWORD and GRAFANA_ADMIN_PASSWORD
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
