@@ -1,0 +1,26 @@
+[Unit]
+Description=serp-harvester (SERP collection worker)
+After=network-online.target redis.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=harvester
+Group=harvester
+WorkingDirectory=/opt/serp-harvester
+ExecStart=/opt/serp-harvester/bin/harvester -config /opt/serp-harvester/config.yaml
+Restart=on-failure
+RestartSec=5s
+
+# Provider API key: set in /etc/serp-harvester.env (chmod 600, not in git),
+# containing e.g. SERPAPI_KEY=..., matching provider_api_key_env in config.
+EnvironmentFile=-/etc/serp-harvester.env
+
+# Basic hardening. Adjust ProtectSystem/ReadWritePaths if output_path
+# writes somewhere other than stdout.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,80 @@
+{
+  "title": "SERP Harvester",
+  "uid": "serp-harvester",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Throughput (req/s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "rate(serp_harvester_success_total[1m])", "legendFormat": "success/s" },
+        { "expr": "rate(serp_harvester_failure_total[1m])", "legendFormat": "failure/s" },
+        { "expr": "rate(serp_harvester_dropped_total[1m])", "legendFormat": "dropped/s" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Fetch Latency (ms)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "serp_harvester_latency_p50_ms", "legendFormat": "p50" },
+        { "expr": "serp_harvester_latency_p95_ms", "legendFormat": "p95" },
+        { "expr": "serp_harvester_latency_p99_ms", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Success Rate",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "rate(serp_harvester_success_total[5m]) / (rate(serp_harvester_success_total[5m]) + rate(serp_harvester_dropped_total[5m]))"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit" } }
+    },
+    {
+      "id": 4,
+      "title": "AI Overview Hit Rate",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 8 },
+      "targets": [
+        {
+          "expr": "rate(serp_harvester_ai_overview_total[5m]) / rate(serp_harvester_success_total[5m])"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit" } }
+    },
+    {
+      "id": 5,
+      "title": "Parser Drift Events / min",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 8 },
+      "targets": [{ "expr": "rate(serp_harvester_parser_drift_total[1m]) * 60" }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 6,
+      "title": "Proxy Bans / min",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 8 },
+      "targets": [{ "expr": "rate(serp_harvester_proxy_banned_total[1m]) * 60" }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 7,
+      "title": "Retries / min",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 14 },
+      "targets": [{ "expr": "rate(serp_harvester_retried_total[1m]) * 60" }]
+    }
+  ]
+}

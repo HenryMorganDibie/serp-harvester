@@ -1,0 +1,60 @@
+# Full self-hosted stack: harvester + redis (distributed queue) + prometheus
+# (metrics scraping) + grafana (dashboards). Run from the repo root:
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# This is what answers "could you deploy and maintain the solution on our
+# servers, rather than Apify or an external hosted API" concretely: this
+# compose file *is* that deployment, running entirely on infrastructure you
+# control. Swap `mode: mock` in config.yaml for `mode: provider` (with an
+# API key) or `mode: live` once you're ready to point it at a real target.
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  harvester:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      # Set when using `mode: provider` — never bake real keys into the
+      # image or commit them; pass at runtime (or via `env_file: .env`).
+      SERPAPI_KEY: "${SERPAPI_KEY:-}"
+    ports:
+      - "9090:9090" # Prometheus metrics + /healthz, if metrics_addr is set in config.yaml
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9091:9090"
+    depends_on:
+      - harvester
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    depends_on:
+      - prometheus
+    restart: unless-stopped

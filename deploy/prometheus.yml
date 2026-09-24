@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: serp-harvester
+    static_configs:
+      - targets: ["harvester:9090"]

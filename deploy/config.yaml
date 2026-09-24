@@ -1,0 +1,38 @@
+# Config used by deploy/docker-compose.yml. Distinct from
+# configs/config.example.yaml (which runs one fixed batch and exits) because
+# a deployed service should be a long-running consumer: queue_backend: redis
+# means the harvester blocks waiting for jobs from the shared stream instead
+# of processing a fixed list and stopping, and metrics_addr means Prometheus
+# has something to scrape the whole time it's up.
+mode: mock # swap for "provider" once SERPAPI_KEY (or your provider's key) is set
+
+queue_backend: redis
+redis_addr: "redis:6379" # service name on the docker-compose network
+redis_stream: "serp-harvester:queries"
+redis_group: "harvesters"
+redis_consumer: "worker-1" # give each replica a unique value if you scale to N containers
+redis_seed_queue: true # demo only: seeds `queries` below so the stack shows real flow on first boot
+
+queries:
+  - "best noise cancelling headphones 2026"
+  - "how does a heat pump work"
+  - "golang worker pool pattern"
+  - "google ai overview scraping"
+  - "web scraping legal considerations"
+
+concurrency: 8
+max_retries: 2
+rate_per_proxy_rps: 1
+rate_burst: 1
+proxies: []
+proxy_ban_fails: 3
+proxy_ban_cooldown: 30s
+
+mock_fixture_dir: "internal/parser/testdata"
+provider_base_url: ""
+provider_api_key_env: "SERPAPI_KEY"
+provider_engine: "google"
+
+output_path: "-"
+report_interval: 10s
+metrics_addr: ":9090" # scraped by prometheus, see deploy/prometheus.yml
