@@ -95,6 +95,7 @@ func (p *Pool) runWorker(ctx context.Context, jobs <-chan queue.Job) {
 
 func (p *Pool) process(ctx context.Context, job queue.Job) {
 	var lastErr error
+	attempts := 0
 	// failover is set when the last attempt was rate-limited or blocked:
 	// that proxy is now cooling, so the retry goes straight to another one
 	// (or waits for the cooldown if none is available) instead of backing
@@ -140,6 +141,7 @@ func (p *Pool) process(ctx context.Context, job queue.Job) {
 			Device:    job.Device,
 		}
 
+		attempts++
 		resp, err := p.Fetcher.Fetch(ctx, req)
 		outcome := fetcher.Classify(err)
 		if err != nil && ctx.Err() != nil {
@@ -198,7 +200,7 @@ func (p *Pool) process(ctx context.Context, job queue.Job) {
 	}
 
 	p.Metrics.IncDropped()
-	log.Printf("worker: job %q dropped after %d attempts: %v", job.Query, p.MaxRetries+1, lastErr)
+	log.Printf("worker: job %q dropped after %d fetch attempts: %v", job.Query, attempts, lastErr)
 }
 
 // drop records a job abandoned because the run is shutting down.

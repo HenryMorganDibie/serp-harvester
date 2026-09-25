@@ -651,11 +651,17 @@ func TestPlaywright_RecoversFromPageCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Crash the idle session's renderer.
+	// Crash the idle session's renderer via the DevTools protocol, which is
+	// deterministic across Chromium builds (navigating to chrome://crash
+	// was not: it hung without crashing on a CI runner).
 	f.mu.Lock()
 	s := f.idle[0]
 	f.mu.Unlock()
-	s.page.Goto("chrome://crash")
+	cdp, err := s.context.NewCDPSession(s.page)
+	if err != nil {
+		t.Fatalf("CDP session: %v", err)
+	}
+	go cdp.Send("Page.crash", nil) // never answers: the target is gone
 	waitFor(t, func() bool { return s.crashed.Load() })
 
 	if _, err := f.Fetch(context.Background(), Request{Query: "q"}); err != nil {
