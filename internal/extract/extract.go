@@ -16,7 +16,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/andybalholm/cascadia"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/model"
+	"github.com/HenryMorganDibie/web-harvester/internal/model"
 )
 
 // Rule extracts one field.

@@ -17,7 +17,7 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/model"
+	"github.com/HenryMorganDibie/web-harvester/internal/model"
 )
 
 // Parser extracts a model.SerpResult from raw HTML.

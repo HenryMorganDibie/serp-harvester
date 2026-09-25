@@ -13,7 +13,7 @@ import (
 
 	"github.com/playwright-community/playwright-go"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/metrics"
+	"github.com/HenryMorganDibie/web-harvester/internal/metrics"
 )
 
 // PlaywrightFetcher renders the search page in headless Chromium (driven by

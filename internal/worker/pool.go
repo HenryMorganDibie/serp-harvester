@@ -18,13 +18,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/fetcher"
-	"github.com/HenryMorganDibie/serp-harvester/internal/metrics"
-	"github.com/HenryMorganDibie/serp-harvester/internal/model"
-	"github.com/HenryMorganDibie/serp-harvester/internal/proxy"
-	"github.com/HenryMorganDibie/serp-harvester/internal/queue"
-	"github.com/HenryMorganDibie/serp-harvester/internal/ratelimit"
-	"github.com/HenryMorganDibie/serp-harvester/internal/store"
+	"github.com/HenryMorganDibie/web-harvester/internal/fetcher"
+	"github.com/HenryMorganDibie/web-harvester/internal/metrics"
+	"github.com/HenryMorganDibie/web-harvester/internal/model"
+	"github.com/HenryMorganDibie/web-harvester/internal/proxy"
+	"github.com/HenryMorganDibie/web-harvester/internal/queue"
+	"github.com/HenryMorganDibie/web-harvester/internal/ratelimit"
+	"github.com/HenryMorganDibie/web-harvester/internal/store"
 )
 
 // Parser extracts a SerpResult from a fetcher's raw response body. Both the
@@ -38,9 +38,9 @@ type Parser interface {
 // userAgents is a small, honest rotation pool. This is standard practice for
 // identifying different concurrent clients — not fingerprint spoofing.
 var userAgents = []string{
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) serp-harvester/0.1",
-	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) serp-harvester/0.1",
-	"Mozilla/5.0 (X11; Linux x86_64) serp-harvester/0.1",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) web-harvester/0.1",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) web-harvester/0.1",
+	"Mozilla/5.0 (X11; Linux x86_64) web-harvester/0.1",
 }
 
 // Pool wires together every stage of the pipeline.

@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/extract"
-	"github.com/HenryMorganDibie/serp-harvester/internal/fetcher"
-	"github.com/HenryMorganDibie/serp-harvester/internal/metrics"
-	"github.com/HenryMorganDibie/serp-harvester/internal/model"
-	"github.com/HenryMorganDibie/serp-harvester/internal/proxy"
-	"github.com/HenryMorganDibie/serp-harvester/internal/ratelimit"
-	"github.com/HenryMorganDibie/serp-harvester/internal/robots"
-	"github.com/HenryMorganDibie/serp-harvester/internal/worker"
+	"github.com/HenryMorganDibie/web-harvester/internal/extract"
+	"github.com/HenryMorganDibie/web-harvester/internal/fetcher"
+	"github.com/HenryMorganDibie/web-harvester/internal/metrics"
+	"github.com/HenryMorganDibie/web-harvester/internal/model"
+	"github.com/HenryMorganDibie/web-harvester/internal/proxy"
+	"github.com/HenryMorganDibie/web-harvester/internal/ratelimit"
+	"github.com/HenryMorganDibie/web-harvester/internal/robots"
+	"github.com/HenryMorganDibie/web-harvester/internal/worker"
 )
 
 // site is a small test website. Every page is plain HTML with links; see

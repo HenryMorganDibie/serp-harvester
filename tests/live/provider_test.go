@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/fetcher"
-	"github.com/HenryMorganDibie/serp-harvester/internal/parser"
+	"github.com/HenryMorganDibie/web-harvester/internal/fetcher"
+	"github.com/HenryMorganDibie/web-harvester/internal/parser"
 )
 
 // TestProvider_RealKeySmokeTest is the real-key verification called for in

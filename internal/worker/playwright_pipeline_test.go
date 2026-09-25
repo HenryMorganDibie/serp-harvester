@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/fetcher"
-	"github.com/HenryMorganDibie/serp-harvester/internal/metrics"
-	"github.com/HenryMorganDibie/serp-harvester/internal/model"
-	"github.com/HenryMorganDibie/serp-harvester/internal/parser"
-	"github.com/HenryMorganDibie/serp-harvester/internal/proxy"
-	"github.com/HenryMorganDibie/serp-harvester/internal/queue"
-	"github.com/HenryMorganDibie/serp-harvester/internal/ratelimit"
+	"github.com/HenryMorganDibie/web-harvester/internal/fetcher"
+	"github.com/HenryMorganDibie/web-harvester/internal/metrics"
+	"github.com/HenryMorganDibie/web-harvester/internal/model"
+	"github.com/HenryMorganDibie/web-harvester/internal/parser"
+	"github.com/HenryMorganDibie/web-harvester/internal/proxy"
+	"github.com/HenryMorganDibie/web-harvester/internal/queue"
+	"github.com/HenryMorganDibie/web-harvester/internal/ratelimit"
 )
 
 // recordingSink keeps every result, for assertions on parsed content.

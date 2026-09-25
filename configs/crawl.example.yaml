@@ -8,8 +8,8 @@
 # configs/config.example.yaml).
 
 # Identify the crawler honestly and give site owners a way to reach you.
-user_agent: "Mozilla/5.0 (compatible; serp-harvester/0.1; +https://github.com/HenryMorganDibie/serp-harvester)"
-robots_agent: serp-harvester   # matched against robots.txt User-agent lines
+user_agent: "Mozilla/5.0 (compatible; web-harvester/0.1; +https://github.com/HenryMorganDibie/web-harvester)"
+robots_agent: web-harvester    # matched against robots.txt User-agent lines
 
 concurrency: 4                 # workers per target
 max_retries: 2

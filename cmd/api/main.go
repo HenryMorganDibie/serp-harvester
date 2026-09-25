@@ -20,10 +20,10 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/api"
-	"github.com/HenryMorganDibie/serp-harvester/internal/queue"
-	"github.com/HenryMorganDibie/serp-harvester/internal/scheduler"
-	"github.com/HenryMorganDibie/serp-harvester/internal/store"
+	"github.com/HenryMorganDibie/web-harvester/internal/api"
+	"github.com/HenryMorganDibie/web-harvester/internal/queue"
+	"github.com/HenryMorganDibie/web-harvester/internal/scheduler"
+	"github.com/HenryMorganDibie/web-harvester/internal/store"
 )
 
 func main() {

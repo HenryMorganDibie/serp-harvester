@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/queue"
+	"github.com/HenryMorganDibie/web-harvester/internal/queue"
 )
 
 // recordingProducer captures every job pushed to it — proves the API layer

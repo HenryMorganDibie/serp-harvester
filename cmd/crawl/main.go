@@ -25,15 +25,15 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/config"
-	"github.com/HenryMorganDibie/serp-harvester/internal/crawl"
-	"github.com/HenryMorganDibie/serp-harvester/internal/fetcher"
-	"github.com/HenryMorganDibie/serp-harvester/internal/metrics"
-	"github.com/HenryMorganDibie/serp-harvester/internal/proxy"
-	"github.com/HenryMorganDibie/serp-harvester/internal/ratelimit"
-	"github.com/HenryMorganDibie/serp-harvester/internal/robots"
-	"github.com/HenryMorganDibie/serp-harvester/internal/store"
-	"github.com/HenryMorganDibie/serp-harvester/internal/worker"
+	"github.com/HenryMorganDibie/web-harvester/internal/config"
+	"github.com/HenryMorganDibie/web-harvester/internal/crawl"
+	"github.com/HenryMorganDibie/web-harvester/internal/fetcher"
+	"github.com/HenryMorganDibie/web-harvester/internal/metrics"
+	"github.com/HenryMorganDibie/web-harvester/internal/proxy"
+	"github.com/HenryMorganDibie/web-harvester/internal/ratelimit"
+	"github.com/HenryMorganDibie/web-harvester/internal/robots"
+	"github.com/HenryMorganDibie/web-harvester/internal/store"
+	"github.com/HenryMorganDibie/web-harvester/internal/worker"
 )
 
 // crawlConfig is the crawler's config file: the harvester's settings for
@@ -59,8 +59,8 @@ type crawlConfig struct {
 func defaults() crawlConfig {
 	c := crawlConfig{
 		Config:         config.Default(),
-		UserAgent:      "Mozilla/5.0 (compatible; serp-harvester/0.1; +https://github.com/HenryMorganDibie/serp-harvester)",
-		RobotsAgent:    "serp-harvester",
+		UserAgent:      "Mozilla/5.0 (compatible; web-harvester/0.1; +https://github.com/HenryMorganDibie/web-harvester)",
+		RobotsAgent:    "web-harvester",
 		RatePerHostRPS: 1,
 	}
 	c.Concurrency = 4

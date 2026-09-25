@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/model"
+	"github.com/HenryMorganDibie/web-harvester/internal/model"
 )
 
 // requirePostgres skips unless POSTGRES_TEST_DSN is set, so these tests

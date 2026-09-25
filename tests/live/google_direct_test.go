@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/fetcher"
-	"github.com/HenryMorganDibie/serp-harvester/internal/parser"
+	"github.com/HenryMorganDibie/web-harvester/internal/fetcher"
+	"github.com/HenryMorganDibie/web-harvester/internal/parser"
 )
 
 // TestGoogleDirect_CurrentlyBlocked documents, reproducibly, that a plain

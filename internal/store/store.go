@@ -9,7 +9,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/model"
+	"github.com/HenryMorganDibie/web-harvester/internal/model"
 )
 
 // Sink accepts finished results.

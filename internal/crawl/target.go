@@ -18,7 +18,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/extract"
+	"github.com/HenryMorganDibie/web-harvester/internal/extract"
 )
 
 // Target is one site (or set of sites) to crawl.

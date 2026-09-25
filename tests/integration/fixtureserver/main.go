@@ -9,7 +9,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/HenryMorganDibie/serp-harvester/tests/integration/fixture"
+	"github.com/HenryMorganDibie/web-harvester/tests/integration/fixture"
 )
 
 func main() {

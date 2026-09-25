@@ -13,7 +13,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/model"
+	"github.com/HenryMorganDibie/web-harvester/internal/model"
 )
 
 // schema is applied on every NewPostgresSink call via CREATE TABLE/INDEX IF

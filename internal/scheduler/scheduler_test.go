@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/queue"
+	"github.com/HenryMorganDibie/web-harvester/internal/queue"
 )
 
 type recordingProducer struct {

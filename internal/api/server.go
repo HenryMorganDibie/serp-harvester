@@ -17,7 +17,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/queue"
+	"github.com/HenryMorganDibie/web-harvester/internal/queue"
 )
 
 // ResultCounter reports how many results exist for a run so far. PostgresSink

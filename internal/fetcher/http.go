@@ -196,7 +196,7 @@ func (f *HTTPFetcher) transportFor(proxyURL string) (*http.Transport, error) {
 
 func setHeaders(r *http.Request, userAgent string) {
 	if userAgent == "" {
-		userAgent = "Mozilla/5.0 (compatible; serp-harvester/0.1)"
+		userAgent = "Mozilla/5.0 (compatible; web-harvester/0.1)"
 	}
 	r.Header.Set("User-Agent", userAgent)
 	r.Header.Set("Accept-Language", "en-US,en;q=0.9")

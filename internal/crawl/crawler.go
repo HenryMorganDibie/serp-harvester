@@ -13,13 +13,13 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/extract"
-	"github.com/HenryMorganDibie/serp-harvester/internal/fetcher"
-	"github.com/HenryMorganDibie/serp-harvester/internal/model"
-	"github.com/HenryMorganDibie/serp-harvester/internal/proxy"
-	"github.com/HenryMorganDibie/serp-harvester/internal/robots"
-	"github.com/HenryMorganDibie/serp-harvester/internal/store"
-	"github.com/HenryMorganDibie/serp-harvester/internal/worker"
+	"github.com/HenryMorganDibie/web-harvester/internal/extract"
+	"github.com/HenryMorganDibie/web-harvester/internal/fetcher"
+	"github.com/HenryMorganDibie/web-harvester/internal/model"
+	"github.com/HenryMorganDibie/web-harvester/internal/proxy"
+	"github.com/HenryMorganDibie/web-harvester/internal/robots"
+	"github.com/HenryMorganDibie/web-harvester/internal/store"
+	"github.com/HenryMorganDibie/web-harvester/internal/worker"
 )
 
 // Crawler crawls one target.

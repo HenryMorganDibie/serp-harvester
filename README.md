@@ -1,27 +1,38 @@
-# serp-harvester
+# web-harvester
 
-The engineering backbone for a large-scale Google SERP collection pipeline:
-concurrent worker pool, proxy health tracking with pluggable rotation
-strategies, per-proxy rate limiting with Retry-After-aware backoff, a
+Self-hosted web data acquisition in Go, with two front ends on one
+acquisition stack:
+
+- **A general-purpose crawler for any website** (`cmd/crawl`): start URLs,
+  link following within a scope, generic page data (metadata, headings,
+  OpenGraph, JSON-LD, text, links) plus CSS-selector extraction rules per
+  site, plain HTTP or headless Chromium, robots.txt obeyed by default. See
+  [Crawling any website](#crawling-any-website).
+- **A large-scale Google SERP pipeline** (`cmd/harvester`): structured
+  extraction of organic results, featured snippets, "people also ask" and AI
+  Overviews, direct or through a third-party SERP provider, with drift
+  detection when the page layout stops matching.
+
+Shared underneath: a concurrent worker pool, proxy health tracking with
+pluggable rotation strategies and escalating cooldowns, adaptive rate
+limiting that honors `Retry-After`, block classification (CAPTCHAs,
+challenges, rate limits; detected and routed around, never bypassed), a
 distributed queue (Redis Streams) for scaling across processes and hosts,
-structured extraction (organic results, featured snippets, "people also
-ask", AI Overviews), drift detection when a page's layout no longer matches
-expected selectors, a third-party SERP-provider fetch path, PostgreSQL or
-JSON-Lines persistence with run/locale/device metadata, and Prometheus
-metrics for the same throughput numbers a request-volume SLA is measured in.
+PostgreSQL or JSON-Lines persistence, and Prometheus metrics with a Grafana
+dashboard.
 
-The same acquisition stack also drives a general-purpose web crawler
-(`cmd/crawl`) for any website: start URLs, link following within a scope,
-generic page data plus CSS-selector extraction rules per site, HTTP or
-headless Chromium, robots.txt obeyed by default. See
-[Crawling any website](#crawling-any-website).
+Formerly `serp-harvester`. Runtime identifiers keep that name so existing
+deployments, queues and dashboards carry on unchanged: the
+`serp_harvester_*` metric prefix, the `serp-harvester:queries` Redis stream,
+the systemd units and `/opt/serp-harvester` paths, and the Docker Compose
+service names.
 
 It runs end to end, offline, with `go run ./cmd/harvester` — no API keys, no
 proxies, no network access required.
 
 ## At a glance
 
-- **What it does**: Google SERP collection (organic, featured snippet,
+- **SERP pipeline**: Google SERP collection (organic, featured snippet,
   "people also ask", AI Overview including its page-token follow-up),
   direct-to-Google (plain HTTP or headless Chromium) or via a third-party
   provider, behind one interface.
@@ -674,7 +685,7 @@ What it does:
   mode. The job's locale becomes the browser locale (and so
   `Accept-Language`), and its device (`desktop`, `mobile`, `tablet`)
   becomes viewport emulation. The User-Agent is the worker pool's honest
-  `serp-harvester` string, unchanged. `request_timeout` bounds each fetch,
+  `web-harvester` string, unchanged. `request_timeout` bounds each fetch,
   and cancellation (shutdown, SIGTERM) aborts the in-flight navigation.
 - **Bounded browser pool.** One Chromium process is shared. Each fetch
   borrows a session (a browser context plus a page) from a pool capped at

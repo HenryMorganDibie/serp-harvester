@@ -13,7 +13,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/queue"
+	"github.com/HenryMorganDibie/web-harvester/internal/queue"
 )
 
 // Harvest describes one recurring job: run Queries on CronExpr's schedule.

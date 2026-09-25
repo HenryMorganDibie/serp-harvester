@@ -1,4 +1,4 @@
-module github.com/HenryMorganDibie/serp-harvester
+module github.com/HenryMorganDibie/web-harvester
 
 go 1.26.0
 

@@ -20,15 +20,15 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/fetcher"
-	"github.com/HenryMorganDibie/serp-harvester/internal/metrics"
-	"github.com/HenryMorganDibie/serp-harvester/internal/parser"
-	"github.com/HenryMorganDibie/serp-harvester/internal/proxy"
-	"github.com/HenryMorganDibie/serp-harvester/internal/queue"
-	"github.com/HenryMorganDibie/serp-harvester/internal/ratelimit"
-	"github.com/HenryMorganDibie/serp-harvester/internal/store"
-	"github.com/HenryMorganDibie/serp-harvester/internal/worker"
-	"github.com/HenryMorganDibie/serp-harvester/tests/integration/fixture"
+	"github.com/HenryMorganDibie/web-harvester/internal/fetcher"
+	"github.com/HenryMorganDibie/web-harvester/internal/metrics"
+	"github.com/HenryMorganDibie/web-harvester/internal/parser"
+	"github.com/HenryMorganDibie/web-harvester/internal/proxy"
+	"github.com/HenryMorganDibie/web-harvester/internal/queue"
+	"github.com/HenryMorganDibie/web-harvester/internal/ratelimit"
+	"github.com/HenryMorganDibie/web-harvester/internal/store"
+	"github.com/HenryMorganDibie/web-harvester/internal/worker"
+	"github.com/HenryMorganDibie/web-harvester/tests/integration/fixture"
 )
 
 func requireIntegration(t *testing.T) (redisAddr, pgDSN string) {

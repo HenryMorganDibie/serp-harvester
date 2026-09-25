@@ -19,8 +19,8 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/playwright-community/playwright-go"
 
-	"github.com/HenryMorganDibie/serp-harvester/internal/metrics"
-	"github.com/HenryMorganDibie/serp-harvester/internal/parser"
+	"github.com/HenryMorganDibie/web-harvester/internal/metrics"
+	"github.com/HenryMorganDibie/web-harvester/internal/parser"
 )
 
 // Browser-backed tests for PlaywrightFetcher. Every page comes from a local
