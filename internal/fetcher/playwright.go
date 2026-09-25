@@ -498,13 +498,16 @@ func (f *PlaywrightFetcher) newSession(browser playwright.Browser, req Request, 
 		return nil, fmt.Errorf("playwright fetcher: new page: %w", err)
 	}
 	s := &browserSession{key: key, browser: browser, context: bctx, page: page}
-	page.OnCrash(func(playwright.Page) {
-		// The in-flight navigation fails on its own; the flag makes sure
-		// the session is discarded rather than reused.
-		s.crashed.Store(true)
-		f.cfg.Metrics.IncPageCrashes()
-	})
+	page.OnCrash(func(playwright.Page) { f.onPageCrash(s) })
 	return s, nil
+}
+
+// onPageCrash handles a renderer crash reported for s's page. The in-flight
+// navigation fails on its own; the flag makes sure the session is discarded
+// rather than reused.
+func (f *PlaywrightFetcher) onPageCrash(s *browserSession) {
+	s.crashed.Store(true)
+	f.cfg.Metrics.IncPageCrashes()
 }
 
 // Close closes every session, the browser and the Playwright driver. It
