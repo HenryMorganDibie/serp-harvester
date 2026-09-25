@@ -5,3 +5,4 @@
 .env
 captures/
 pages.jsonl
+capture.yaml

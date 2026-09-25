@@ -842,6 +842,13 @@ First live run (2026-09-25, from a cloud datacenter egress IP, no proxy):
 | Chromium | 3, 10s apart | `/sorry/` "unusual traffic" CAPTCHA page | `captcha` |
 | Chromium (calibration) | 20, 30s apart over 9.5 min | `/sorry/` CAPTCHA on every request | `captcha` (20/20) |
 
+Second run (2026-09-25, from a residential/consumer connection, no proxy):
+
+| Fetcher | Requests | What Google returned | Classified as |
+|---|---|---|---|
+| HTTP | 3, 10s apart | JS-check shell, as from the datacenter IP | `interstitial` |
+| Chromium (headless, in Docker) | 3, 10s apart | consent page (dismissed via reject-all), then `/sorry/` CAPTCHA on the first request | `captcha` (3/3) |
+
 What that establishes: the block and interstitial classifiers match Google's
 real markup on both paths (previously only synthetic fixtures), and from that
 egress Google blocks the first request, so the block is IP-reputation-driven,
@@ -851,7 +858,18 @@ validated against live markup, and no rate or cooldown value can be derived
 from this egress. Defaults are unchanged; the observation is only consistent
 with keeping `proxy_ban_cooldown_max` at 10m or more. Repeating the capture
 through egress Google does not block on sight (`SERP_LIVE_PROXY`, or a run
-from a residential connection) is the next step.
+from a residential connection) was the next step, and was tried; see
+below.
+
+What the second run adds: plain HTTP gets the JS-check page regardless of
+egress, so direct collection needs a browser; and headless Chromium was
+refused on its first request from a consumer connection as well as a
+datacenter one. Two egress types are not enough to separate IP reputation
+from automated-browser detection, but they are enough to conclude that
+direct Google collection is not dependable with this stack, which by design
+does no fingerprint masking or CAPTCHA solving. For Google results, `mode:
+provider` (a third-party SERP API, see "Third-party provider fetcher") is
+the dependable path; the crawler (`cmd/crawl`) covers other sites.
 
 The integration suite (not live Google) runs against any local services:
 
