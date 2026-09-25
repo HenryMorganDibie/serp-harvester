@@ -24,8 +24,11 @@ import (
 //	HARVESTER_LIVE=true SERP_CAPTURE_DIR=./captures go test ./tests/live -run Capture -v
 //	HARVESTER_LIVE=true SERP_CAPTURE_DIR=./captures go test ./tests/live -run Calibration -v -timeout 60m
 //
+// SERP_CAPTURE_DIR is resolved relative to this package directory
+// (tests/live) when relative, as go test runs there.
+//
 // Environment (all optional): SERP_CAPTURE_QUERIES (comma-separated),
-// SERP_LIVE_MODE (http | playwright, calibration only; default playwright),
+// SERP_CAPTURE_MODES (capture only; default "http,playwright"), SERP_LIVE_MODE (http | playwright, calibration only; default playwright),
 // SERP_LIVE_PROXY (one proxy URL), SERP_CALIBRATION_REQUESTS (default 20,
 // max 100), SERP_CALIBRATION_INTERVAL (default 15s, min 3s),
 // SERP_HARVESTER_CHROMIUM_PATH.
@@ -107,7 +110,11 @@ func TestGoogleCapture_SavesPages(t *testing.T) {
 	dir := captureDir(t)
 	proxyURL := os.Getenv("SERP_LIVE_PROXY")
 
-	for _, mode := range []string{"http", "playwright"} {
+	modes := []string{"http", "playwright"}
+	if v := os.Getenv("SERP_CAPTURE_MODES"); v != "" {
+		modes = strings.Split(v, ",")
+	}
+	for _, mode := range modes {
 		f := liveFetcher(t, mode)
 		for i, q := range envQueries() {
 			if i > 0 {
@@ -135,6 +142,9 @@ func TestGoogleCapture_SavesPages(t *testing.T) {
 			b, _ := json.MarshalIndent(meta, "", "  ")
 			os.WriteFile(base+".json", b, 0o644)
 			t.Logf("%s %q -> %s (%d bytes saved to %s.html)", mode, q, outcome, len(page), base)
+			if outcome == fetcher.OutcomeTransport || outcome == fetcher.OutcomeOther {
+				t.Fatalf("network failure, not a capture of what Google serves: %v", err)
+			}
 		}
 	}
 }
