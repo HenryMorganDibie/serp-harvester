@@ -12,6 +12,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"math/rand"
 	"strings"
@@ -62,6 +63,11 @@ type Pool struct {
 	// MaxProxyWait bounds how long an attempt waits for a proxy to leave
 	// cooldown when every proxy is cooling. Zero means 2 minutes.
 	MaxProxyWait time.Duration
+
+	// UserAgent, if set, is sent on every request instead of rotating
+	// through the built-in list (the web crawler sets its configured one,
+	// which is also what robots.txt rules are matched against).
+	UserAgent string
 }
 
 // Run starts Concurrency workers consuming jobs, and blocks until jobs is
@@ -94,6 +100,86 @@ func (p *Pool) runWorker(ctx context.Context, jobs <-chan queue.Job) {
 }
 
 func (p *Pool) process(ctx context.Context, job queue.Job) {
+	build := func(px *proxy.Proxy) fetcher.Request {
+		return fetcher.Request{
+			Query:     job.Query,
+			UserAgent: p.userAgent(),
+			ProxyURL:  px.URL,
+			Language:  localeLanguage(job.Locale),
+			Country:   localeCountry(job.Locale),
+			Device:    job.Device,
+		}
+	}
+	var result *model.SerpResult
+	use := func(resp *fetcher.Response, px *proxy.Proxy) error {
+		r, err := p.Parser.Parse(job.Query, resp.Body)
+		if err != nil {
+			return err
+		}
+		r.LatencyMS = resp.Latency.Milliseconds()
+		r.ProxyUsed = px.Key()
+		r.FetchedAt = time.Now().UTC()
+		r.RunID = job.RunID
+		r.Locale = job.Locale
+		r.Device = job.Device
+		if r.Calibration != nil {
+			// Archive the raw pre-parse body only on drift — see README
+			// "Handling selector drift": this is what a selector-retuning
+			// pass would want to inspect, and keeping it off normal results
+			// keeps JSONLSink output small at volume.
+			r.RawBody = resp.Body
+		}
+		result = r
+		return nil
+	}
+
+	if err := p.Acquire(ctx, build, nil, use); err != nil {
+		p.Metrics.IncDropped()
+		log.Printf("worker: job %q %v", job.Query, err)
+		return
+	}
+
+	if err := p.Sink.Write(result); err != nil {
+		log.Printf("worker: sink write failed for %q: %v", job.Query, err)
+	}
+	p.Metrics.IncSuccess()
+	if result.AIOverview != nil {
+		p.Metrics.IncAIOverviewPresent()
+	}
+	if result.Calibration != nil {
+		p.Metrics.IncCalibrationFlagged()
+	}
+}
+
+// DroppedError reports why Acquire gave up on a job.
+type DroppedError struct {
+	// Attempts is the number of fetches actually made.
+	Attempts int
+	// Canceled is set when the run shut down (ctx ended) mid-job.
+	Canceled bool
+	Err      error
+}
+
+func (e *DroppedError) Error() string {
+	if e.Canceled {
+		return fmt.Sprintf("dropped: %v", e.Err)
+	}
+	return fmt.Sprintf("dropped after %d fetch attempts: %v", e.Attempts, e.Err)
+}
+
+func (e *DroppedError) Unwrap() error { return e.Err }
+
+// Acquire runs the fetch loop every job shares: pick a proxy (waiting out
+// cooldowns up to MaxProxyWait), wait for the rate limiter, fetch, classify
+// the result and feed it back to the proxy pool, limiter and metrics, and
+// retry with backoff (or fail over at once after a rate limit or block)
+// up to MaxRetries. build makes the request for the chosen proxy. rateKey,
+// if set, picks the rate-limiter bucket for that proxy and request (nil
+// means one bucket per proxy). use is called with each successful response;
+// an error from it counts as a failed attempt and is retried.
+//
+// It returns nil once use succeeds, or a *DroppedError.
+func (p *Pool) Acquire(ctx context.Context, build func(*proxy.Proxy) fetcher.Request, rateKey func(*proxy.Proxy, fetcher.Request) string, use func(*fetcher.Response, *proxy.Proxy) error) error {
 	var lastErr error
 	attempts := 0
 	// failover is set when the last attempt was rate-limited or blocked:
@@ -101,13 +187,13 @@ func (p *Pool) process(ctx context.Context, job queue.Job) {
 	// (or waits for the cooldown if none is available) instead of backing
 	// off first.
 	failover := false
+	canceled := func(err error) error { return &DroppedError{Attempts: attempts, Canceled: true, Err: err} }
 
 	for attempt := 0; attempt <= p.MaxRetries; attempt++ {
 		if attempt > 0 {
 			p.Metrics.IncRetried()
 			if !failover && !sleepCtx(ctx, backoffDuration(attempt)) {
-				p.drop(job, ctx.Err())
-				return
+				return canceled(ctx.Err())
 			}
 		}
 		failover = false
@@ -115,30 +201,24 @@ func (p *Pool) process(ctx context.Context, job queue.Job) {
 		px, err := p.nextProxy(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
-				p.drop(job, ctx.Err())
-				return
+				return canceled(ctx.Err())
 			}
 			lastErr = err
 			continue
 		}
 
-		if err := p.Limiter.Wait(ctx, px.Key()); err != nil {
+		req := build(px)
+		key := px.Key()
+		if rateKey != nil {
+			key = rateKey(px, req)
+		}
+		if err := p.Limiter.Wait(ctx, key); err != nil {
 			// Context cancelled (shutdown/timeout) while waiting for a rate
 			// limit slot. Counted as dropped rather than silently
 			// unaccounted for, so success+dropped stays a complete count of
 			// every job actually attempted — found via soak testing, where
 			// jobs in flight at the exact cutoff need to land somewhere.
-			p.drop(job, err)
-			return
-		}
-
-		req := fetcher.Request{
-			Query:     job.Query,
-			UserAgent: userAgents[rand.Intn(len(userAgents))],
-			ProxyURL:  px.URL,
-			Language:  localeLanguage(job.Locale),
-			Country:   localeCountry(job.Locale),
-			Device:    job.Device,
+			return canceled(err)
 		}
 
 		attempts++
@@ -148,11 +228,10 @@ func (p *Pool) process(ctx context.Context, job queue.Job) {
 			outcome = fetcher.OutcomeCanceled // shutdown, not the proxy's fault
 		}
 		p.Metrics.IncOutcome(outcome.String())
-		p.recordOutcome(px, outcome, err)
+		p.recordOutcome(px, key, outcome, err)
 		if err != nil {
 			if outcome == fetcher.OutcomeCanceled {
-				p.drop(job, err)
-				return
+				return canceled(err)
 			}
 			lastErr = err
 			p.Metrics.IncFailure()
@@ -166,47 +245,21 @@ func (p *Pool) process(ctx context.Context, job queue.Job) {
 			p.Latencies.Record(resp.Latency)
 		}
 
-		result, err := p.Parser.Parse(job.Query, resp.Body)
-		if err != nil {
+		if err := use(resp, px); err != nil {
 			lastErr = err
 			p.Metrics.IncFailure()
 			continue
 		}
-		result.LatencyMS = resp.Latency.Milliseconds()
-		result.ProxyUsed = px.Key()
-		result.FetchedAt = time.Now().UTC()
-		result.RunID = job.RunID
-		result.Locale = job.Locale
-		result.Device = job.Device
-		if result.Calibration != nil {
-			// Archive the raw pre-parse body only on drift — see README
-			// "Handling selector drift": this is what a selector-retuning
-			// pass would want to inspect, and keeping it off normal results
-			// keeps JSONLSink output small at volume.
-			result.RawBody = resp.Body
-		}
-
-		if err := p.Sink.Write(result); err != nil {
-			log.Printf("worker: sink write failed for %q: %v", job.Query, err)
-		}
-		p.Metrics.IncSuccess()
-		if result.AIOverview != nil {
-			p.Metrics.IncAIOverviewPresent()
-		}
-		if result.Calibration != nil {
-			p.Metrics.IncCalibrationFlagged()
-		}
-		return
+		return nil
 	}
-
-	p.Metrics.IncDropped()
-	log.Printf("worker: job %q dropped after %d fetch attempts: %v", job.Query, attempts, lastErr)
+	return &DroppedError{Attempts: attempts, Err: lastErr}
 }
 
-// drop records a job abandoned because the run is shutting down.
-func (p *Pool) drop(job queue.Job, err error) {
-	p.Metrics.IncDropped()
-	log.Printf("worker: job %q dropped: %v", job.Query, err)
+func (p *Pool) userAgent() string {
+	if p.UserAgent != "" {
+		return p.UserAgent
+	}
+	return userAgents[rand.Intn(len(userAgents))]
 }
 
 // nextProxy returns a proxy that is not cooling. When every proxy is
@@ -237,8 +290,9 @@ func (p *Pool) nextProxy(ctx context.Context) (*proxy.Proxy, error) {
 }
 
 // recordOutcome feeds a classified fetch result back to the proxy pool
-// (health and cooldowns) and the rate limiter (adaptive throttling).
-func (p *Pool) recordOutcome(px *proxy.Proxy, outcome fetcher.Outcome, err error) {
+// (health and cooldowns) and the rate limiter bucket rateKey (adaptive
+// throttling).
+func (p *Pool) recordOutcome(px *proxy.Proxy, rateKey string, outcome fetcher.Outcome, err error) {
 	var retryAfter time.Duration
 	var rl *fetcher.RateLimitError
 	if errors.As(err, &rl) {
@@ -250,9 +304,9 @@ func (p *Pool) recordOutcome(px *proxy.Proxy, outcome fetcher.Outcome, err error
 	}
 	switch {
 	case outcome == fetcher.OutcomeSuccess:
-		p.Limiter.Reward(px.Key())
+		p.Limiter.Reward(rateKey)
 	case outcome == fetcher.OutcomeRateLimited || outcome.Blocked():
-		if p.Limiter.Penalize(px.Key()) {
+		if p.Limiter.Penalize(rateKey) {
 			p.Metrics.IncRateDecrease()
 		}
 	}
@@ -267,7 +321,7 @@ func proxyOutcome(o fetcher.Outcome) proxy.Outcome {
 		return proxy.Success
 	case fetcher.OutcomeRateLimited:
 		return proxy.RateLimited
-	case fetcher.OutcomeCaptcha, fetcher.OutcomeInterstitial:
+	case fetcher.OutcomeCaptcha, fetcher.OutcomeInterstitial, fetcher.OutcomeChallenge:
 		return proxy.Blocked
 	case fetcher.OutcomeConsent, fetcher.OutcomeClientError, fetcher.OutcomeCanceled:
 		return proxy.Neutral

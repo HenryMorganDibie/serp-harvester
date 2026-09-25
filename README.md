@@ -10,6 +10,12 @@ expected selectors, a third-party SERP-provider fetch path, PostgreSQL or
 JSON-Lines persistence with run/locale/device metadata, and Prometheus
 metrics for the same throughput numbers a request-volume SLA is measured in.
 
+The same acquisition stack also drives a general-purpose web crawler
+(`cmd/crawl`) for any website: start URLs, link following within a scope,
+generic page data plus CSS-selector extraction rules per site, HTTP or
+headless Chromium, robots.txt obeyed by default. See
+[Crawling any website](#crawling-any-website).
+
 It runs end to end, offline, with `go run ./cmd/harvester` — no API keys, no
 proxies, no network access required.
 
@@ -19,6 +25,11 @@ proxies, no network access required.
   "people also ask", AI Overview including its page-token follow-up),
   direct-to-Google (plain HTTP or headless Chromium) or via a third-party
   provider, behind one interface.
+- **Any website**: `cmd/crawl` crawls arbitrary sites with the same proxy
+  pool, adaptive per-host rate limiting, block classification and
+  HTTP/Chromium fetchers, extracting title, metadata, headings, OpenGraph,
+  JSON-LD, text and links from every page plus per-site CSS-selector fields
+  and item lists. See [Crawling any website](#crawling-any-website).
 - **Deployment**: self-hosted. `docker compose -f deploy/docker-compose.yml up -d`
   runs the full stack (harvester + Redis + Prometheus + Grafana) on your own
   infrastructure. No Apify dependency.
@@ -70,11 +81,89 @@ go run ./cmd/harvester -config configs/config.example.yaml -mode mock
 
 This runs the full pipeline — queue, worker pool, proxy rotation, rate
 limiter, fetch, parse, sink — against bundled fixture HTML, and prints
-JSON-Lines results plus periodic throughput metrics to stdout:
+JSON-Lines results to stdout and periodic throughput metrics to stderr:
 
 ```
 [metrics] elapsed=2s success=5 failure=0 retried=0 dropped=0 completed=5 req/s=2.50 projected/day=216000
 ```
+
+## Crawling any website
+
+`cmd/crawl` applies the harvester's acquisition stack to arbitrary sites.
+Each target in a config (see `configs/crawl.example.yaml`) says where to
+start, how far to go, how to fetch and what to extract:
+
+```bash
+# Ad hoc: the given pages and everything they link to on the same host
+go run ./cmd/crawl -url https://example.com/ -depth 1 -i-have-reviewed-tos
+
+# Configured targets, results to pages.jsonl (or sink_backend: postgres)
+go run ./cmd/crawl -config configs/crawl.example.yaml -i-have-reviewed-tos
+```
+
+What every page yields (`model.Page`, one JSON line or one row in the
+`pages` table): URL, final URL after redirects, depth, status, content type,
+latency and proxy; title, meta description, canonical URL, language, h1-h3
+headings, OpenGraph tags, every JSON-LD block (schema.org products,
+articles, events, organizations), visible text (capped) and absolute links.
+On top of that a target can define:
+
+```yaml
+extract:
+  fields:                                  # one value, or a list with all: true
+    category: { selector: "h1", required: true }
+  items:                                   # one object per repeated element
+    selector: ".product-card"
+    required: true
+    fields:
+      name:  { selector: ".title" }
+      price: { selector: ".price" }
+      url:   { selector: "a", attr: href }  # href/src resolved to absolute URLs
+```
+
+`required` works like the SERP parser's drift detection: a page where a
+required field or the item selector matches nothing is flagged
+(`extraction.missing`) with its HTML kept, instead of being stored as a
+quietly empty result. Selectors are validated at startup.
+
+Crawling: `start_urls`, `max_depth` (0 = only the start URLs), `max_pages`
+(default 100), `allowed_domains` (default: the start hosts; subdomains
+included), `follow` (a CSS selector for which links to follow, e.g. only
+pagination), and `include` / `exclude` regular expressions. URLs are
+normalized and fetched once; non-HTML responses are recorded but not
+parsed or followed, and links to binaries (images, archives, documents)
+are not followed.
+
+Fetching (`render`): `http` (default); `browser`, headless Chromium for
+every page; or `auto`, plain HTTP with Chromium only for pages that are
+client-side app shells (executable scripts, almost no server-rendered
+text), which is usually a small share of a site.
+
+Politeness and blocks:
+
+- **robots.txt is obeyed by default** (RFC 9309: longest match, `*` and
+  `$` patterns, 4xx = no rules, 5xx or unreachable = disallow all), and
+  `Crawl-delay` is honored per host. `respect_robots: false` exists for
+  sites you own or have permission to crawl.
+- `rate_per_host_rps` is the rate to one host **across all proxies**
+  (default 1 req/s); adaptive throttling lowers it for a host that answers
+  429 or blocks. Each target has its own proxy pool, so a block on one
+  site cools an egress IP for that site only.
+- Bot-protection pages on arbitrary sites are classified, not interacted
+  with: Cloudflare challenges, DataDome and PerimeterX walls are outcome
+  `challenge`; a reCAPTCHA/hCaptcha/Turnstile widget counts as `captcha`
+  only on an error response (the same widgets on an ordinary contact or
+  login form are not a block). A challenged page is never retried in the
+  browser; its egress cools and the URL is recorded as failed.
+- The crawler identifies itself (`user_agent`, matched against robots.txt
+  via `robots_agent`) and refuses to run without `-i-have-reviewed-tos`.
+
+What is verified: the crawler, extraction, robots.txt handling and the
+`pages` table are tested against local sites and real PostgreSQL, and
+`render: auto` against real Chromium (`internal/crawl`, `internal/extract`,
+`internal/robots`, `internal/store`). It has not been run against third-party
+sites at volume, and how a given site responds (rate limits, bot
+protection) is only known by measuring it at a low rate first.
 
 ## Architecture
 
@@ -394,12 +483,13 @@ curl localhost:9090/metrics
 # serp_harvester_failure_total 3
 # serp_harvester_dropped_total 0
 # serp_harvester_retried_total 5
-# serp_harvester_fetch_outcomes_total{outcome="captcha"} 1   # every attempt, by outcome
+# serp_harvester_fetch_outcomes_total{outcome="captcha"} 1   # every attempt, by outcome (incl. crawl: challenge)
 # serp_harvester_proxy_cooldowns_total{reason="blocked"} 1   # failures | blocked | rate_limited
 # serp_harvester_proxies_available 2 / serp_harvester_proxies_cooling 1 / serp_harvester_proxies_throttled 1
 # serp_harvester_ratelimit_decreases_total 3                 # adaptive throttling steps
 # serp_harvester_fetch_failovers_total 12                    # hybrid: HTTP -> browser
 # serp_harvester_http_consent_handled_total 1
+# serp_harvester_robots_disallowed_total 4                   # crawl: URLs skipped for robots.txt
 # mode: playwright/hybrid add serp_harvester_browser_* (launches, launch
 # failures, disconnects, page crashes, navigation timeouts, consent handled,
 # blocked{reason}, sessions open/in use)
@@ -840,7 +930,11 @@ number requires a different architecture from what's here — it requires:
 cmd/harvester/          CLI entrypoint and wiring (the worker/consumer side)
 cmd/api/                Job-submission HTTP layer: POST /jobs, GET /jobs/:run_id (the producer side)
 cmd/loadtest/           Offline orchestration measurement: fixed-count, concurrency sweep, and soak-test modes
-internal/model/         SerpResult and its sub-structures (incl. run_id/locale/device, raw body on drift)
+cmd/crawl/              General-purpose web crawler for any website (see "Crawling any website")
+internal/crawl/         Crawl targets: scope, frontier, robots.txt and Crawl-delay, per-host rate keys
+internal/extract/       Any HTML page -> model.Page: generic page data + per-site CSS-selector fields/items
+internal/robots/        robots.txt (RFC 9309) parsing, matching and per-origin caching
+internal/model/         SerpResult (SERP) and Page (crawler) with their sub-structures
 internal/api/           HTTP handlers for cmd/api — depends only on queue.Producer, never Fetcher/Parser
 internal/scheduler/     Cron-based recurring harvests — also a pure queue.Producer, wired into cmd/api
 internal/queue/         Job sources/producer: in-memory, and Redis Streams for multi-process/host scaling
@@ -853,9 +947,9 @@ internal/parser/        HTML and provider-JSON → SerpResult extraction, with d
 internal/worker/        The pool tying fetch → parse → sink together with retry/backoff
 internal/metrics/       Run counters, latency percentile tracking, periodic reporting,
                         and a Prometheus /metrics + /healthz endpoint
-internal/store/         Sink interface + JSON-Lines and PostgreSQL implementations
+internal/store/         Sink/PageSink interfaces + JSON-Lines and PostgreSQL (serp_results, pages) implementations
 internal/config/        YAML config loading
-configs/                Example config
+configs/                Example configs (harvester, schedule, crawl)
 deploy/                 Docker Compose (harvester+Redis+Prometheus+Grafana, opt-in Playwright harvester),
                         systemd units, Dockerfiles (Alpine default, official Playwright image for mode: playwright)
 tests/integration/      Pipeline test against real Redis/PostgreSQL/Chromium + the fixture site and proxies

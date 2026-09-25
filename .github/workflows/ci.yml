@@ -42,3 +42,21 @@ jobs:
       - run: go build -o bin/harvester ./cmd/harvester
       - name: run mock harvest end to end
         run: ./bin/harvester -config configs/config.example.yaml -mode mock
+      # The crawl binary against a throwaway local site: robots.txt obeyed,
+      # one link followed, one JSON line per page on stdout.
+      - name: run crawl end to end against a local site
+        run: |
+          site=$(mktemp -d)
+          mkdir -p "$site/p" "$site/private"
+          printf '<html><head><title>Home</title></head><body><a href="p/1.html">one</a><a href="private/x.html">x</a></body></html>' > "$site/index.html"
+          printf '<html><head><title>One</title></head><body><h1>One</h1></body></html>' > "$site/p/1.html"
+          printf '<html><head><title>Private</title></head></html>' > "$site/private/x.html"
+          printf 'User-agent: *\nDisallow: /private/\n' > "$site/robots.txt"
+          python3 -m http.server 8765 --bind 127.0.0.1 --directory "$site" >/dev/null 2>&1 &
+          sleep 1
+          go build -o bin/crawl ./cmd/crawl
+          ./bin/crawl -url http://127.0.0.1:8765/ -depth 1 -i-have-reviewed-tos > pages.jsonl
+          cat pages.jsonl
+          test "$(wc -l < pages.jsonl)" -eq 2
+          grep -q '"title":"One"' pages.jsonl
+          ! grep -q '"title":"Private"' pages.jsonl

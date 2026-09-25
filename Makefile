@@ -3,6 +3,7 @@
 build:
 	go build -o bin/harvester ./cmd/harvester
 	go build -o bin/loadtest ./cmd/loadtest
+	go build -o bin/crawl ./cmd/crawl
 
 test:
 	go test ./...
@@ -10,7 +11,7 @@ test:
 # Browser tests for mode: playwright (local fixtures only). Needs
 # `make playwright-install` first.
 test-playwright:
-	SERP_HARVESTER_PLAYWRIGHT=1 go test ./internal/fetcher/ ./internal/worker/ -run 'Playwright' -v
+	SERP_HARVESTER_PLAYWRIGHT=1 go test ./internal/fetcher/ ./internal/worker/ ./internal/crawl/ -run 'Playwright|Auto' -v
 
 playwright-install:
 	sh scripts/install-playwright.sh --with-deps

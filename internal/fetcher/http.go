@@ -39,6 +39,16 @@ type HTTPFetcher struct {
 	// dismissed (for metrics).
 	OnConsentHandled func()
 
+	// Generic switches block detection from Google's pages to those of
+	// bot-protection vendors on arbitrary sites (classifyGenericPage). Set
+	// by the web crawler.
+	Generic bool
+	// DetectAppShells, with Generic, reports a client-side app shell
+	// (looksLikeJSShell) as an interstitial so a FailoverFetcher renders
+	// it in the browser. Leave it off when there is no browser to fall
+	// back to: the shell is then returned as the page it is.
+	DetectAppShells bool
+
 	jar *cookiejar.Jar
 
 	// transports holds one *http.Transport per proxy URL ("" = direct), so
@@ -75,15 +85,18 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, req Request) (*Response, error)
 	}
 	client := &http.Client{Timeout: f.Timeout, Jar: f.jar, Transport: transport}
 
-	q := url.Values{}
-	q.Set("q", req.Query)
-	if req.Country != "" {
-		q.Set("gl", req.Country)
+	u := req.URL
+	if u == "" {
+		q := url.Values{}
+		q.Set("q", req.Query)
+		if req.Country != "" {
+			q.Set("gl", req.Country)
+		}
+		if req.Language != "" {
+			q.Set("hl", req.Language)
+		}
+		u = f.Endpoint + "?" + q.Encode()
 	}
-	if req.Language != "" {
-		q.Set("hl", req.Language)
-	}
-	u := f.Endpoint + "?" + q.Encode()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -97,7 +110,11 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, req Request) (*Response, error)
 		return nil, err
 	}
 
-	kind := classifyPage(finalURL.String(), string(body))
+	contentType := header.Get("Content-Type")
+	kind := pageNormal
+	if isHTML(contentType) {
+		kind = f.classify(finalURL.String(), status, string(body))
+	}
 	if kind == pageConsent {
 		consentReq, ok, err := rejectConsentRequest(ctx, finalURL, body, req.UserAgent)
 		if err != nil {
@@ -112,9 +129,10 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, req Request) (*Response, error)
 		if f.OnConsentHandled != nil {
 			f.OnConsentHandled()
 		}
-		kind = classifyPage(finalURL.String(), string(body))
+		contentType = header.Get("Content-Type")
+		kind = f.classify(finalURL.String(), status, string(body))
 	}
-	if kind == pageNormal && requiresJS(string(body)) {
+	if kind == pageNormal && isHTML(contentType) && f.needsJS(string(body)) {
 		// The page only works with JavaScript; hybrid mode renders it in
 		// the browser instead.
 		kind = pageInterstitial
@@ -132,10 +150,26 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, req Request) (*Response, error)
 	}
 
 	return &Response{
-		StatusCode: status,
-		Body:       body,
-		Latency:    time.Since(start),
+		StatusCode:  status,
+		Body:        body,
+		Latency:     time.Since(start),
+		ContentType: contentType,
+		FinalURL:    finalURL.String(),
 	}, nil
+}
+
+func (f *HTTPFetcher) classify(pageURL string, status int, html string) pageKind {
+	if f.Generic {
+		return classifyGenericPage(pageURL, status, html)
+	}
+	return classifyPage(pageURL, html)
+}
+
+func (f *HTTPFetcher) needsJS(rawHTML string) bool {
+	if f.Generic {
+		return f.DetectAppShells && looksLikeJSShell(rawHTML)
+	}
+	return requiresJS(rawHTML)
 }
 
 // transportFor returns the pooled transport for proxyURL.

@@ -25,9 +25,12 @@ type BrowserCounters struct {
 	// classified as a block the fetcher does not get past: a CAPTCHA /
 	// "unusual traffic" page, a consent page with no usable reject form,
 	// or a JS-check interstitial that persisted after rendering.
+	// BlockedChallenge counts bot-protection vendor challenge pages on
+	// generic sites (web crawler).
 	BlockedCaptcha      uint64
 	BlockedConsent      uint64
 	BlockedInterstitial uint64
+	BlockedChallenge    uint64
 
 	// LaunchFailures counts failed Chromium launches (each one starts a
 	// launch backoff). PageCrashes counts renderer crashes of a page.
@@ -83,7 +86,8 @@ func (b *BrowserCounters) IncConsentHandled() {
 }
 
 // IncBlocked records one page classified as a block, by reason: "captcha",
-// "consent", or "interstitial". Unknown reasons count as interstitial.
+// "consent", "challenge" or "interstitial". Unknown reasons count as
+// interstitial.
 func (b *BrowserCounters) IncBlocked(reason string) {
 	if b == nil {
 		return
@@ -93,6 +97,8 @@ func (b *BrowserCounters) IncBlocked(reason string) {
 		atomic.AddUint64(&b.BlockedCaptcha, 1)
 	case "consent":
 		atomic.AddUint64(&b.BlockedConsent, 1)
+	case "challenge":
+		atomic.AddUint64(&b.BlockedChallenge, 1)
 	default:
 		atomic.AddUint64(&b.BlockedInterstitial, 1)
 	}
@@ -116,6 +122,7 @@ func (b *BrowserCounters) AddSessionsInUse(delta int64) {
 type BrowserSnapshot struct {
 	Launches, Disconnects, NavigationTimeouts, ConsentHandled uint64
 	BlockedCaptcha, BlockedConsent, BlockedInterstitial       uint64
+	BlockedChallenge                                          uint64
 	LaunchFailures, PageCrashes                               uint64
 	SessionsOpen, SessionsInUse                               int64
 }
@@ -133,6 +140,7 @@ func (b *BrowserCounters) Snapshot() BrowserSnapshot {
 		BlockedCaptcha:      atomic.LoadUint64(&b.BlockedCaptcha),
 		BlockedConsent:      atomic.LoadUint64(&b.BlockedConsent),
 		BlockedInterstitial: atomic.LoadUint64(&b.BlockedInterstitial),
+		BlockedChallenge:    atomic.LoadUint64(&b.BlockedChallenge),
 		LaunchFailures:      atomic.LoadUint64(&b.LaunchFailures),
 		PageCrashes:         atomic.LoadUint64(&b.PageCrashes),
 		SessionsOpen:        atomic.LoadInt64(&b.SessionsOpen),

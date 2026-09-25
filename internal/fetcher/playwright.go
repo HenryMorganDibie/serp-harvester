@@ -93,6 +93,11 @@ type PlaywrightConfig struct {
 	// parser's drift detection flags the result.
 	WaitSelector string
 
+	// Generic switches block detection from Google's pages to those of
+	// bot-protection vendors on arbitrary sites (see HTTPFetcher.Generic)
+	// and skips Google's consent cookie. Set by the web crawler.
+	Generic bool
+
 	// Metrics receives browser counters. Optional.
 	Metrics *metrics.BrowserCounters
 }
@@ -125,8 +130,8 @@ const maxBodyBytes = 5 << 20
 // also deploy/playwright.Dockerfile).
 // Call Close to shut the browser down.
 func NewPlaywrightFetcher(cfg PlaywrightConfig) (*PlaywrightFetcher, error) {
-	if cfg.Endpoint == "" {
-		return nil, errors.New("playwright fetcher: endpoint is required")
+	if cfg.Endpoint == "" && !cfg.Generic {
+		return nil, errors.New("playwright fetcher: endpoint is required (or Generic, for URL fetches)")
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 30 * time.Second
@@ -200,9 +205,15 @@ func (f *PlaywrightFetcher) render(s *browserSession, req Request) (*Response, e
 		return ms
 	}
 
-	target, err := searchURL(f.cfg.Endpoint, req)
-	if err != nil {
-		return nil, err
+	target := req.URL
+	if target == "" && f.cfg.Endpoint == "" {
+		return nil, errors.New("playwright fetcher: request has no URL and the fetcher no endpoint")
+	}
+	if target == "" {
+		var err error
+		if target, err = searchURL(f.cfg.Endpoint, req); err != nil {
+			return nil, err
+		}
 	}
 	resp, err := s.page.Goto(target, playwright.PageGotoOptions{
 		WaitUntil: playwright.WaitUntilStateLoad,
@@ -220,7 +231,11 @@ func (f *PlaywrightFetcher) render(s *browserSession, req Request) (*Response, e
 	if err != nil {
 		return nil, fmt.Errorf("playwright fetcher: read page content: %w", err)
 	}
-	kind := classifyPage(s.page.URL(), html)
+	contentType := ""
+	if resp != nil {
+		contentType, _ = resp.HeaderValue("content-type")
+	}
+	kind := f.classify(s.page.URL(), status, html)
 
 	if kind == pageConsent {
 		next, ok, err := submitRejectConsent(s.page, remainingMS())
@@ -239,7 +254,7 @@ func (f *PlaywrightFetcher) render(s *browserSession, req Request) (*Response, e
 		if html, err = s.page.Content(); err != nil {
 			return nil, fmt.Errorf("playwright fetcher: read page content: %w", err)
 		}
-		kind = classifyPage(s.page.URL(), html)
+		kind = f.classify(s.page.URL(), status, html)
 	}
 
 	if blocked := blockedErrorFor(kind, s.page.URL(), status, html); blocked != nil {
@@ -258,11 +273,15 @@ func (f *PlaywrightFetcher) render(s *browserSession, req Request) (*Response, e
 		return nil, &StatusError{StatusCode: status}
 	}
 
-	if f.cfg.WaitSelector != "" {
+	waitSelector := f.cfg.WaitSelector
+	if req.WaitSelector != "" {
+		waitSelector = req.WaitSelector
+	}
+	if waitSelector != "" {
 		// A missing selector isn't an error: the page is returned as
 		// rendered and the parser's calibration check flags it, with the
 		// raw body archived for selector retuning.
-		if _, err := s.page.WaitForSelector(f.cfg.WaitSelector, playwright.PageWaitForSelectorOptions{
+		if _, err := s.page.WaitForSelector(waitSelector, playwright.PageWaitForSelectorOptions{
 			State:   playwright.WaitForSelectorStateAttached,
 			Timeout: playwright.Float(remainingMS()),
 		}); err == nil {
@@ -279,7 +298,14 @@ func (f *PlaywrightFetcher) render(s *browserSession, req Request) (*Response, e
 	if status == 0 {
 		status = 200
 	}
-	return &Response{StatusCode: status, Body: body, Latency: time.Since(start)}, nil
+	return &Response{StatusCode: status, Body: body, Latency: time.Since(start), ContentType: contentType, FinalURL: s.page.URL()}, nil
+}
+
+func (f *PlaywrightFetcher) classify(pageURL string, status int, html string) pageKind {
+	if f.cfg.Generic {
+		return classifyGenericPage(pageURL, status, html)
+	}
+	return classifyPage(pageURL, html)
 }
 
 func (f *PlaywrightFetcher) navigationError(err error) error {
@@ -486,11 +512,13 @@ func (f *PlaywrightFetcher) newSession(browser playwright.Browser, req Request, 
 	}
 	// Same pre-seeded consent cookie HTTPFetcher uses, host-only for the
 	// endpoint. It affects only the regulatory consent screen.
-	if err := bctx.AddCookies([]playwright.OptionalCookie{{
-		Name: "CONSENT", Value: "YES+", URL: playwright.String(f.cfg.Endpoint),
-	}}); err != nil {
-		bctx.Close()
-		return nil, fmt.Errorf("playwright fetcher: seed consent cookie: %w", err)
+	if !f.cfg.Generic && f.cfg.Endpoint != "" {
+		if err := bctx.AddCookies([]playwright.OptionalCookie{{
+			Name: "CONSENT", Value: "YES+", URL: playwright.String(f.cfg.Endpoint),
+		}}); err != nil {
+			bctx.Close()
+			return nil, fmt.Errorf("playwright fetcher: seed consent cookie: %w", err)
+		}
 	}
 	page, err := bctx.NewPage()
 	if err != nil {

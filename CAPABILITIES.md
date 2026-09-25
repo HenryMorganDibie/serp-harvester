@@ -17,6 +17,13 @@ architecture-to-operations breakdown. What it hasn't done yet is operate
 against your specific volume in production — see the volume question below
 for exactly what that means and doesn't mean.
 
+The same stack also runs a general-purpose crawler for any website
+(`cmd/crawl`, README "Crawling any website"): configurable scope and depth,
+generic page data plus per-site CSS-selector extraction, HTTP or headless
+Chromium, robots.txt obeyed by default, bot-protection pages classified and
+never interacted with. Tested against local sites, real PostgreSQL and real
+Chromium; not yet run against third-party sites at volume.
+
 ## Do you have a Google SERP / AI Overviews solution? Direct from Google, or third-party?
 
 Both, behind one interface (`internal/fetcher.Fetcher`):

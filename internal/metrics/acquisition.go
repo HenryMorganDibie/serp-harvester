@@ -74,6 +74,10 @@ func (c *Counters) IncFailover() { atomic.AddUint64(&c.Failovers, 1) }
 // fetcher's reject-all form submission.
 func (c *Counters) IncHTTPConsentHandled() { atomic.AddUint64(&c.HTTPConsentHandled, 1) }
 
+// IncRobotsDisallowed records a URL the web crawler did not fetch because
+// the site's robots.txt disallows it.
+func (c *Counters) IncRobotsDisallowed() { atomic.AddUint64(&c.RobotsDisallowed, 1) }
+
 // Outcomes returns fetch-attempt counts by outcome.
 func (c *Counters) Outcomes() []LabeledValue { return c.outcomes.snapshot() }
 

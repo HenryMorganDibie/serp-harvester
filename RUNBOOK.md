@@ -289,6 +289,35 @@ Symptom: `ProxyPoolExhausted` (`serp_harvester_proxies_available` is 0) or
    JS check). That's expected against Google today; `mode: playwright`
    skips the wasted HTTP attempt.
 
+## Web crawler (`cmd/crawl`)
+
+Each target logs a summary line when it finishes: `fetched`, `failed`,
+`robots_disallowed`, `flagged`, `discovered`, `budget_exhausted`. The
+Prometheus metrics above apply too; the crawler adds:
+
+- `serp_harvester_fetch_outcomes_total{outcome="challenge"}`: a
+  bot-protection page (Cloudflare challenge, DataDome, PerimeterX). The
+  site is refusing this egress; that proxy cools for this target and the
+  URL is recorded as failed. There is no code path that gets past it. Lower
+  `rate_per_host_rps`, use different egress, or ask the site owner for
+  access.
+- `serp_harvester_robots_disallowed_total`: URLs skipped for robots.txt.
+  A whole target skipped usually means robots.txt disallows the crawler's
+  `robots_agent` or `*`, or robots.txt was unreachable (5xx, network error
+  or 429 are treated as "disallow everything", per RFC 9309). Check with
+  `curl -A '<user_agent>' https://site/robots.txt`.
+- `serp_harvester_parser_drift_total` also counts crawled pages whose
+  `required` extraction fields or items matched nothing: the site's layout
+  no longer fits the selectors. Those pages keep their HTML (`raw_body` /
+  `raw_response`) for retuning.
+- `budget_exhausted=true` means `max_pages` stopped the crawl from queueing
+  more URLs; raise it, or narrow `follow` / `include` if the budget went to
+  pages you don't need (faceted filters and sort orders are the usual
+  culprits; see the `exclude` example in `configs/crawl.example.yaml`).
+- A `render: auto` target with `serp_harvester_fetch_failovers_total` close
+  to its page count is rendering nearly every page: use `render: browser`
+  to skip the wasted HTTP attempt.
+
 ## Known gaps this runbook can't cover yet
 
 - Prometheus alerting rules are included (`deploy/prometheus/alerts.yml`),

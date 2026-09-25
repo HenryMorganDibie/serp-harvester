@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"reflect"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
 
@@ -39,6 +40,38 @@ CREATE TABLE IF NOT EXISTS serp_results (
 CREATE INDEX IF NOT EXISTS idx_serp_results_run_id    ON serp_results (run_id);
 CREATE INDEX IF NOT EXISTS idx_serp_results_query     ON serp_results (query);
 CREATE INDEX IF NOT EXISTS idx_serp_results_fetched_at ON serp_results (fetched_at);
+
+CREATE TABLE IF NOT EXISTS pages (
+	id           BIGSERIAL PRIMARY KEY,
+	run_id       TEXT,
+	target       TEXT NOT NULL,
+	url          TEXT NOT NULL,
+	final_url    TEXT,
+	depth        INT NOT NULL DEFAULT 0,
+	status_code  INT NOT NULL DEFAULT 0,
+	content_type TEXT,
+	fetched_at   TIMESTAMPTZ NOT NULL,
+	latency_ms   BIGINT NOT NULL DEFAULT 0,
+	proxy_used   TEXT,
+	title        TEXT,
+	description  TEXT,
+	canonical    TEXT,
+	language     TEXT,
+	headings     JSONB,
+	open_graph   JSONB,
+	json_ld      JSONB,
+	text         TEXT,
+	links        JSONB,
+	fields       JSONB,
+	items        JSONB,
+	extraction   JSONB,
+	raw_response BYTEA,
+	created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_pages_run_id     ON pages (run_id);
+CREATE INDEX IF NOT EXISTS idx_pages_target     ON pages (target);
+CREATE INDEX IF NOT EXISTS idx_pages_url        ON pages (url);
+CREATE INDEX IF NOT EXISTS idx_pages_fetched_at ON pages (fetched_at);
 `
 
 // PostgresSink implements Sink by inserting one row per result.
@@ -77,6 +110,45 @@ func (s *PostgresSink) CountByRunID(ctx context.Context, runID string) (int64, e
 	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM serp_results WHERE run_id = $1", runID).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("postgres sink: count by run_id: %w", err)
+	}
+	return count, nil
+}
+
+// WritePage implements PageSink: one row per fetched page, with the
+// structured parts as JSONB.
+func (s *PostgresSink) WritePage(p *model.Page) error {
+	var cols [7][]byte
+	for i, v := range []any{p.Headings, p.OpenGraph, p.JSONLD, p.Links, p.Fields, p.Items, p.Extraction} {
+		b, err := marshalOptional(v)
+		if err != nil {
+			return fmt.Errorf("postgres sink: marshal page column %d: %w", i, err)
+		}
+		cols[i] = b
+	}
+	_, err := s.db.ExecContext(context.Background(), `
+		INSERT INTO pages
+			(run_id, target, url, final_url, depth, status_code, content_type, fetched_at, latency_ms, proxy_used,
+			 title, description, canonical, language, headings, open_graph, json_ld, text, links, fields, items,
+			 extraction, raw_response)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+	`,
+		nullIfEmpty(p.RunID), p.Target, p.URL, nullIfEmpty(p.FinalURL), p.Depth, p.StatusCode, nullIfEmpty(p.ContentType),
+		p.FetchedAt, p.LatencyMS, nullIfEmpty(p.ProxyUsed),
+		nullIfEmpty(p.Title), nullIfEmpty(p.Description), nullIfEmpty(p.Canonical), nullIfEmpty(p.Language),
+		cols[0], cols[1], cols[2], nullIfEmpty(p.Text), cols[3], cols[4], cols[5], cols[6],
+		nullBytes(p.RawBody),
+	)
+	if err != nil {
+		return fmt.Errorf("postgres sink: insert page: %w", err)
+	}
+	return nil
+}
+
+// CountPagesByRunID returns how many pages have been written for runID.
+func (s *PostgresSink) CountPagesByRunID(ctx context.Context, runID string) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pages WHERE run_id = $1", runID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("postgres sink: count pages by run_id: %w", err)
 	}
 	return count, nil
 }
@@ -133,18 +205,14 @@ func marshalOptional(v any) ([]byte, error) {
 }
 
 func isNilValue(v any) bool {
-	switch x := v.(type) {
-	case *model.FeaturedSnippet:
-		return x == nil
-	case *model.AIOverview:
-		return x == nil
-	case *model.CalibrationNote:
-		return x == nil
-	case []string:
-		return x == nil
-	default:
-		return v == nil
+	if v == nil {
+		return true
 	}
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Interface:
+		return rv.IsNil()
+	}
+	return false
 }
 
 func nullIfEmpty(s string) any {

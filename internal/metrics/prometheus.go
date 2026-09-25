@@ -37,6 +37,7 @@ type PrometheusCollector struct {
 	rateDecreases      *prometheus.Desc
 	failovers          *prometheus.Desc
 	httpConsent        *prometheus.Desc
+	robotsDisallowed   *prometheus.Desc
 	proxiesAvailable   *prometheus.Desc
 	proxiesCooling     *prometheus.Desc
 	proxiesThrottled   *prometheus.Desc
@@ -76,6 +77,7 @@ func NewPrometheusCollector(c *Counters, latencies *LatencyRecorder) *Prometheus
 		rateDecreases:      prometheus.NewDesc("serp_harvester_ratelimit_decreases_total", "Adaptive per-proxy rate decreases after a rate limit or block.", nil, nil),
 		failovers:          prometheus.NewDesc("serp_harvester_fetch_failovers_total", "Fetches retried on the fallback fetcher (mode: hybrid).", nil, nil),
 		httpConsent:        prometheus.NewDesc("serp_harvester_http_consent_handled_total", "Consent pages dismissed by the HTTP fetcher's reject-all form submission.", nil, nil),
+		robotsDisallowed:   prometheus.NewDesc("serp_harvester_robots_disallowed_total", "Total URLs the web crawler skipped because robots.txt disallows them.", nil, nil),
 		proxiesAvailable:   prometheus.NewDesc("serp_harvester_proxies_available", "Proxies not currently in cooldown.", nil, nil),
 		proxiesCooling:     prometheus.NewDesc("serp_harvester_proxies_cooling", "Proxies currently in cooldown.", nil, nil),
 		proxiesThrottled:   prometheus.NewDesc("serp_harvester_proxies_throttled", "Proxies whose adaptive request rate is below the configured rate.", nil, nil),
@@ -111,6 +113,7 @@ func (p *PrometheusCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- p.rateDecreases
 	ch <- p.failovers
 	ch <- p.httpConsent
+	ch <- p.robotsDisallowed
 	if p.counters.ProxyGauges != nil {
 		ch <- p.proxiesAvailable
 		ch <- p.proxiesCooling
@@ -156,6 +159,7 @@ func (p *PrometheusCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(p.rateDecreases, prometheus.CounterValue, float64(atomic.LoadUint64(&p.counters.RateDecreases)))
 	ch <- prometheus.MustNewConstMetric(p.failovers, prometheus.CounterValue, float64(atomic.LoadUint64(&p.counters.Failovers)))
 	ch <- prometheus.MustNewConstMetric(p.httpConsent, prometheus.CounterValue, float64(atomic.LoadUint64(&p.counters.HTTPConsentHandled)))
+	ch <- prometheus.MustNewConstMetric(p.robotsDisallowed, prometheus.CounterValue, float64(atomic.LoadUint64(&p.counters.RobotsDisallowed)))
 	if p.counters.ProxyGauges != nil {
 		g := p.counters.ProxyGauges()
 		ch <- prometheus.MustNewConstMetric(p.proxiesAvailable, prometheus.GaugeValue, float64(g.Available))
@@ -174,6 +178,7 @@ func (p *PrometheusCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(p.browserBlocked, prometheus.CounterValue, float64(b.BlockedCaptcha), "captcha")
 		ch <- prometheus.MustNewConstMetric(p.browserBlocked, prometheus.CounterValue, float64(b.BlockedConsent), "consent")
 		ch <- prometheus.MustNewConstMetric(p.browserBlocked, prometheus.CounterValue, float64(b.BlockedInterstitial), "interstitial")
+		ch <- prometheus.MustNewConstMetric(p.browserBlocked, prometheus.CounterValue, float64(b.BlockedChallenge), "challenge")
 		ch <- prometheus.MustNewConstMetric(p.browserSessionsOpen, prometheus.GaugeValue, float64(b.SessionsOpen))
 		ch <- prometheus.MustNewConstMetric(p.browserSessionsInUse, prometheus.GaugeValue, float64(b.SessionsInUse))
 	}

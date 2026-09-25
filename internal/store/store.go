@@ -17,7 +17,13 @@ type Sink interface {
 	Write(result *model.SerpResult) error
 }
 
-// JSONLSink writes one JSON object per line to an underlying writer.
+// PageSink accepts pages from the web crawler.
+type PageSink interface {
+	WritePage(page *model.Page) error
+}
+
+// JSONLSink writes one JSON object per line to an underlying writer. It
+// implements both Sink and PageSink.
 type JSONLSink struct {
 	mu sync.Mutex
 	w  io.Writer
@@ -30,10 +36,19 @@ func NewJSONLSink(w io.Writer) *JSONLSink {
 
 // Write serializes result as one JSON line.
 func (s *JSONLSink) Write(result *model.SerpResult) error {
+	return s.writeLine(result)
+}
+
+// WritePage serializes page as one JSON line.
+func (s *JSONLSink) WritePage(page *model.Page) error {
+	return s.writeLine(page)
+}
+
+func (s *JSONLSink) writeLine(v any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	b, err := json.Marshal(result)
+	b, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("store: marshal result: %w", err)
 	}

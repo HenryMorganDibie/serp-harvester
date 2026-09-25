@@ -1,0 +1,61 @@
+# Example config for cmd/crawl, the general-purpose web crawler.
+#
+#   go run ./cmd/crawl -config configs/crawl.example.yaml -i-have-reviewed-tos
+#   go run ./cmd/crawl -url https://example.com/ -depth 1 -i-have-reviewed-tos
+#
+# Every setting is optional except targets. Proxy, rate-limit, retry,
+# browser, sink and metrics settings are the same as the harvester's (see
+# configs/config.example.yaml).
+
+# Identify the crawler honestly and give site owners a way to reach you.
+user_agent: "Mozilla/5.0 (compatible; serp-harvester/0.1; +https://github.com/HenryMorganDibie/serp-harvester)"
+robots_agent: serp-harvester   # matched against robots.txt User-agent lines
+
+concurrency: 4                 # workers per target
+max_retries: 2
+request_timeout: 20s
+rate_per_host_rps: 1           # per site, across all proxies
+rate_burst: 1
+adaptive_rate: true            # slow a host down when it rate-limits or blocks
+
+proxies: []                    # empty = direct; same format as the harvester
+proxy_ban_cooldown: 30s
+proxy_ban_cooldown_max: 10m
+
+browser_pool_size: 4           # used by render: browser | auto targets
+
+sink_backend: jsonl            # jsonl | postgres (table "pages")
+output_path: pages.jsonl       # "-" for stdout
+report_interval: 5s
+# metrics_addr: ":9090"
+
+targets:
+  # Generic data only: title, description, headings, OpenGraph, JSON-LD,
+  # visible text and links for every page on the site, 2 links deep.
+  - name: docs
+    start_urls: ["https://example.com/"]
+    max_depth: 2
+    max_pages: 200
+    exclude: ['\?(.*&)?(sort|filter)=']   # skip faceted duplicates
+
+  # Structured extraction: one object per product card on category pages,
+  # following only pagination and category links. "required" flags pages
+  # where the selectors stop matching (layout change), keeping their HTML.
+  - name: shop
+    start_urls: ["https://shop.example.com/category/kettles"]
+    allowed_domains: ["shop.example.com"]
+    max_depth: 3
+    max_pages: 500
+    follow: "a.pagination-next, nav.categories a"
+    render: auto               # HTTP; Chromium only for JavaScript app shells
+    extract:
+      fields:
+        category: { selector: "h1", required: true }
+      items:
+        selector: ".product-card"
+        required: true
+        fields:
+          name:  { selector: ".product-title" }
+          price: { selector: ".price" }
+          url:   { selector: "a", attr: href }
+          image: { selector: "img", attr: src }

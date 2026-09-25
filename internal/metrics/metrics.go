@@ -7,6 +7,7 @@ package metrics
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"time"
 )
@@ -33,10 +34,12 @@ type Counters struct {
 	// for any reason (see Cooldowns for the breakdown).
 	ProxyBanned uint64
 
-	// RateDecreases, Failovers and HTTPConsentHandled: see acquisition.go.
+	// RateDecreases, Failovers, HTTPConsentHandled and RobotsDisallowed:
+	// see acquisition.go.
 	RateDecreases      uint64
 	Failovers          uint64
 	HTTPConsentHandled uint64
+	RobotsDisallowed   uint64
 
 	outcomes  labeledCounter
 	cooldowns labeledCounter
@@ -96,7 +99,8 @@ func (c *Counters) Snapshot() Snapshot {
 	}
 }
 
-// StartReporter prints a throughput line every interval until ctx is done,
+// StartReporter prints a throughput line to stderr every interval until
+// ctx is done (stdout is left to results, e.g. JSONL output "-"),
 // returning a channel that is closed once the reporter has stopped (so
 // callers can flush a final line after cancellation).
 func (c *Counters) StartReporter(ctx context.Context, interval time.Duration) <-chan struct{} {
@@ -127,22 +131,22 @@ func (c *Counters) report(elapsed time.Duration) {
 		rps = float64(s.Success) / elapsed.Seconds()
 	}
 	dailyProjection := rps * 86400
-	fmt.Printf(
+	fmt.Fprintf(os.Stderr,
 		"[metrics] elapsed=%s success=%d failure=%d retried=%d dropped=%d completed=%d req/s=%.2f projected/day=%.0f ai_overview=%d calibration_flagged=%d proxy_banned=%d\n",
 		elapsed.Round(time.Second), s.Success, s.Failure, s.Retried, s.Dropped, total, rps, dailyProjection,
 		s.AIOverviewPresent, s.CalibrationFlagged, s.ProxyBanned,
 	)
 	if c.ProxyGauges != nil {
 		g := c.ProxyGauges()
-		fmt.Printf("[metrics] proxies available=%d cooling=%d throttled=%d failovers=%d\n",
+		fmt.Fprintf(os.Stderr, "[metrics] proxies available=%d cooling=%d throttled=%d failovers=%d\n",
 			g.Available, g.Cooling, g.Throttled, atomic.LoadUint64(&c.Failovers))
 	}
 	if c.Browser != nil {
 		b := c.Browser.Snapshot()
-		fmt.Printf(
-			"[metrics] browser launches=%d disconnects=%d nav_timeouts=%d consent_handled=%d blocked_captcha=%d blocked_consent=%d blocked_interstitial=%d sessions_open=%d sessions_in_use=%d\n",
+		fmt.Fprintf(os.Stderr,
+			"[metrics] browser launches=%d disconnects=%d nav_timeouts=%d consent_handled=%d blocked_captcha=%d blocked_consent=%d blocked_interstitial=%d blocked_challenge=%d sessions_open=%d sessions_in_use=%d\n",
 			b.Launches, b.Disconnects, b.NavigationTimeouts, b.ConsentHandled,
-			b.BlockedCaptcha, b.BlockedConsent, b.BlockedInterstitial, b.SessionsOpen, b.SessionsInUse,
+			b.BlockedCaptcha, b.BlockedConsent, b.BlockedInterstitial, b.BlockedChallenge, b.SessionsOpen, b.SessionsInUse,
 		)
 	}
 }

@@ -21,7 +21,7 @@ import (
 // it only names it.
 
 // BlockedError reports a page the fetcher recognised as a block it does not
-// get past. Reason is "captcha", "consent" or "interstitial".
+// get past. Reason is "captcha", "challenge", "consent" or "interstitial".
 type BlockedError struct {
 	Reason     string
 	URL        string
@@ -71,6 +71,9 @@ const (
 	OutcomeConsent
 	// OutcomeInterstitial: a JS-check or similar interstitial.
 	OutcomeInterstitial
+	// OutcomeChallenge: a bot-protection vendor's challenge page
+	// (Cloudflare, DataDome, PerimeterX) in front of a generic site.
+	OutcomeChallenge
 	OutcomeTimeout
 	OutcomeTransport
 	// OutcomeServerError: HTTP 5xx.
@@ -87,6 +90,7 @@ var outcomeNames = [...]string{
 	OutcomeCaptcha:      "captcha",
 	OutcomeConsent:      "consent",
 	OutcomeInterstitial: "interstitial",
+	OutcomeChallenge:    "challenge",
 	OutcomeTimeout:      "timeout",
 	OutcomeTransport:    "transport",
 	OutcomeServerError:  "http_5xx",
@@ -117,7 +121,7 @@ func (o Outcome) Retryable() bool {
 // Blocked reports whether the target answered with a block page (as
 // opposed to failing or being slow).
 func (o Outcome) Blocked() bool {
-	return o == OutcomeCaptcha || o == OutcomeInterstitial
+	return o == OutcomeCaptcha || o == OutcomeInterstitial || o == OutcomeChallenge
 }
 
 // Classify maps a Fetch error to an Outcome. A nil error is
@@ -137,6 +141,8 @@ func Classify(err error) Outcome {
 			return OutcomeCaptcha
 		case "consent":
 			return OutcomeConsent
+		case "challenge":
+			return OutcomeChallenge
 		default:
 			return OutcomeInterstitial
 		}
@@ -173,6 +179,7 @@ const (
 	pageConsent
 	pageCaptcha
 	pageInterstitial
+	pageChallenge
 )
 
 // classifyPage recognises the non-results pages Google is known to serve,
@@ -221,6 +228,67 @@ func requiresJS(rawHTML string) bool {
 	return false
 }
 
+// classifyGenericPage recognises the pages bot-protection vendors put in
+// front of arbitrary sites. It only names them; nothing ever interacts with
+// a challenge, and a challenge is never retried in the browser. It is
+// stricter than classifyPage: a reCAPTCHA, hCaptcha or Turnstile widget on
+// an ordinary page (a contact or login form) is not a block, so a widget
+// only counts when the response status is an error.
+func classifyGenericPage(pageURL string, status int, html string) pageKind {
+	if u, err := url.Parse(pageURL); err == nil && strings.Contains(u.Path, "/cdn-cgi/challenge-platform/") {
+		return pageChallenge
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return pageNormal
+	}
+	switch {
+	case doc.Find(`#challenge-form, #challenge-running, #challenge-stage, #cf-challenge-running, form[action*="__cf_chl"]`).Length() > 0,
+		(status == 403 || status == 503) && strings.HasPrefix(strings.TrimSpace(doc.Find("title").First().Text()), "Just a moment"),
+		doc.Find(`iframe[src*="captcha-delivery.com"], #px-captcha`).Length() > 0:
+		return pageChallenge
+	case status >= 400 && doc.Find(`.g-recaptcha, iframe[src*="recaptcha"], .h-captcha, iframe[src*="hcaptcha.com"], .cf-turnstile, iframe[src*="challenges.cloudflare.com"]`).Length() > 0:
+		return pageCaptcha
+	}
+	return pageNormal
+}
+
+// minShellText is the visible text below which a raw page with scripts is
+// treated as a client-side app shell.
+const minShellText = 200
+
+// looksLikeJSShell reports whether a raw (unrendered) page is a client-side
+// app shell: executable scripts, but almost no server-rendered text. Such a page has
+// no content until a browser runs it. Only meaningful for fetchers that
+// don't execute scripts.
+func looksLikeJSShell(rawHTML string) bool {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(rawHTML))
+	if err != nil {
+		return false
+	}
+	executable := doc.Find("script").FilterFunction(func(_ int, s *goquery.Selection) bool {
+		// Data blocks (JSON-LD, templates, JSON) render nothing.
+		switch t := strings.ToLower(strings.TrimSpace(s.AttrOr("type", ""))); t {
+		case "", "module", "text/javascript", "application/javascript", "text/ecmascript", "application/ecmascript":
+			return true
+		}
+		return false
+	})
+	if executable.Length() == 0 {
+		return false
+	}
+	body := doc.Find("body").Clone()
+	body.Find("script, style, noscript, template, svg").Remove()
+	return len(strings.Join(strings.Fields(body.Text()), " ")) < minShellText
+}
+
+// isHTML reports whether a Content-Type header denotes an HTML page. An
+// empty header is assumed to be HTML.
+func isHTML(contentType string) bool {
+	ct := strings.ToLower(contentType)
+	return ct == "" || strings.Contains(ct, "html")
+}
+
 // blockedErrorFor returns the BlockedError for a non-normal page kind, or
 // nil for pageNormal. body is the page as served (or rendered).
 func blockedErrorFor(kind pageKind, pageURL string, status int, body string) *BlockedError {
@@ -232,6 +300,8 @@ func blockedErrorFor(kind pageKind, pageURL string, status int, body string) *Bl
 		reason = "consent"
 	case pageInterstitial:
 		reason = "interstitial"
+	case pageChallenge:
+		reason = "challenge"
 	default:
 		return nil
 	}

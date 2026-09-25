@@ -236,3 +236,61 @@ func TestPostgresSink_InvalidDSNFailsFast(t *testing.T) {
 		t.Fatal("expected an error connecting to a nonexistent database")
 	}
 }
+
+func TestPostgresSink_WritePageAndReadBack(t *testing.T) {
+	sink := newTestSink(t)
+	ctx := context.Background()
+	if _, err := sink.db.ExecContext(ctx, "TRUNCATE TABLE pages"); err != nil {
+		t.Fatal(err)
+	}
+
+	full := &model.Page{
+		Target: "shop", RunID: "crawl-1", URL: "https://shop.test/k", FinalURL: "https://shop.test/kettles",
+		Depth: 1, StatusCode: 200, ContentType: "text/html", FetchedAt: time.Now().UTC(), LatencyMS: 42,
+		Title: "Kettles", Description: "d", Canonical: "https://shop.test/kettles", Language: "en",
+		Headings:  []model.Heading{{Level: 1, Text: "Kettles"}},
+		OpenGraph: map[string]string{"og:title": "Kettles"},
+		JSONLD:    []json.RawMessage{json.RawMessage(`{"@type":"ItemList"}`)},
+		Text:      "Kettles Steel £29.99",
+		Links:     []string{"https://shop.test/p/1"},
+		Fields:    map[string]any{"category": "Kettles"},
+		Items:     []map[string]any{{"name": "Steel", "price": "£29.99"}},
+	}
+	flagged := &model.Page{
+		Target: "shop", RunID: "crawl-1", URL: "https://shop.test/odd", FetchedAt: time.Now().UTC(),
+		Extraction: &model.ExtractionNote{Missing: []string{"items"}}, RawBody: []byte("<html>odd</html>"),
+	}
+	for _, p := range []*model.Page{full, flagged} {
+		if err := sink.WritePage(p); err != nil {
+			t.Fatalf("WritePage: %v", err)
+		}
+	}
+	if n, err := sink.CountPagesByRunID(ctx, "crawl-1"); err != nil || n != 2 {
+		t.Fatalf("count = %d, %v", n, err)
+	}
+
+	var itemName, ogTitle, jsonldType string
+	var nullFields, nullRaw bool
+	err := sink.db.QueryRowContext(ctx, `
+		SELECT items->0->>'name', open_graph->>'og:title', json_ld->0->>'@type', fields IS NULL, raw_response IS NULL
+		FROM pages WHERE url = $1`, full.URL).Scan(&itemName, &ogTitle, &jsonldType, &nullFields, &nullRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if itemName != "Steel" || ogTitle != "Kettles" || jsonldType != "ItemList" || nullFields || !nullRaw {
+		t.Errorf("row: item=%q og=%q jsonld=%q fields_null=%v raw_null=%v", itemName, ogTitle, jsonldType, nullFields, nullRaw)
+	}
+
+	var missing string
+	var linksNull, itemsNull bool
+	var raw []byte
+	err = sink.db.QueryRowContext(ctx, `
+		SELECT extraction->'missing'->>0, links IS NULL, items IS NULL, raw_response FROM pages WHERE url = $1`,
+		flagged.URL).Scan(&missing, &linksNull, &itemsNull, &raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing != "items" || !linksNull || !itemsNull || string(raw) != "<html>odd</html>" {
+		t.Errorf("flagged row: missing=%q links_null=%v items_null=%v raw=%q (empty columns must be SQL NULL)", missing, linksNull, itemsNull, raw)
+	}
+}

@@ -13,7 +13,11 @@ import (
 
 // Request describes one fetch.
 type Request struct {
-	Query     string
+	Query string
+	// URL, if set, is fetched as-is instead of a search for Query at the
+	// fetcher's endpoint (Query, Country and Language are then not added
+	// to it). The web crawler uses this.
+	URL       string
 	UserAgent string
 	ProxyURL  string // empty = direct connection
 
@@ -25,6 +29,9 @@ type Request struct {
 	Language string
 	// Device is an optional device hint (e.g. "desktop", "mobile", "tablet").
 	Device string
+	// WaitSelector, if set, overrides PlaywrightConfig.WaitSelector for
+	// this fetch. Ignored by fetchers that don't render.
+	WaitSelector string
 }
 
 // Response is the raw result of a fetch.
@@ -32,9 +39,13 @@ type Response struct {
 	StatusCode int
 	Body       []byte
 	Latency    time.Duration
+	// ContentType is the response's Content-Type header, when known.
+	ContentType string
+	// FinalURL is the URL after redirects, when known.
+	FinalURL string
 }
 
-// Fetcher retrieves raw SERP HTML for a query.
+// Fetcher retrieves raw SERP HTML for a query, or a page by URL.
 type Fetcher interface {
 	Fetch(ctx context.Context, req Request) (*Response, error)
 }
