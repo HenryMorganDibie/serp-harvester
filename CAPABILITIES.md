@@ -55,9 +55,11 @@ CAPTCHA and other block pages, which are reported as failures and never
 interacted with. It adds no CAPTCHA solving, fingerprint spoofing or other
 evasion. Verified against local fixtures in real Chromium
 (`internal/fetcher/playwright_browser_test.go`,
-`internal/worker/playwright_pipeline_test.go`); **not yet run against live
-Google**, so whether it returns usable results there, and how often it is
-blocked, is unmeasured. `HARVESTER_LIVE=true go test ./tests/live/... -run
+`internal/worker/playwright_pipeline_test.go`). **Run against live Google
+once (2026-09-25) from a datacenter egress IP only**: every request (23 in
+total) got the `/sorry/` CAPTCHA page, correctly classified as `captcha`; no
+results page was served, so whether it returns usable results from better
+egress is still unmeasured (README "Measuring against Google"). `HARVESTER_LIVE=true go test ./tests/live/... -run
 Playwright -v` is the test that measures it. Rendering does not make direct
 scraping production-ready: Google still challenges real browsers, and the
 parser's selectors are still fixture-targeted.

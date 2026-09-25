@@ -52,4 +52,15 @@ func TestSummarize(t *testing.T) {
 			t.Errorf("%+v", s)
 		}
 	})
+
+	t.Run("blocked from the first request", func(t *testing.T) {
+		s := summarize("playwright", 30*time.Second, []calibrationSample{sample(0, "captcha", 0), sample(1, "captcha", 0)})
+		joined := strings.Join(s.Suggestions, "\n")
+		if !strings.Contains(joined, "not rate-driven") || strings.Contains(joined, "keep rate_per_proxy_rps below") {
+			t.Errorf("suggestions:\n%s", joined)
+		}
+		if !strings.Contains(joined, "no recovery observed") {
+			t.Errorf("should still report that the block did not clear:\n%s", joined)
+		}
+	})
 }

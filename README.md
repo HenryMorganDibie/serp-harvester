@@ -731,9 +731,28 @@ the material for retargeting the parser, and
 `TestGoogleCalibration_MeasuresPushback` sends a capped number of queries at
 a fixed pace and reports when pushback starts, any `Retry-After`, and how
 long until success resumes, with suggested `rate_per_proxy_rps` and
-`proxy_ban_cooldown` values. Neither has been run yet: the environment this
-was built in cannot reach Google. Their output depends heavily on the egress
-IP; a datacenter IP is likely to see mostly block pages. The same gated tests run against any local services:
+`proxy_ban_cooldown` values.
+
+First live run (2026-09-25, from a cloud datacenter egress IP, no proxy):
+
+| Fetcher | Requests | What Google returned | Classified as |
+|---|---|---|---|
+| HTTP | 3, 10s apart | JS-check shell (`<noscript>` refresh to `/httpservice/retry/enablejs`) | `interstitial` |
+| Chromium | 3, 10s apart | `/sorry/` "unusual traffic" CAPTCHA page | `captcha` |
+| Chromium (calibration) | 20, 30s apart over 9.5 min | `/sorry/` CAPTCHA on every request | `captcha` (20/20) |
+
+What that establishes: the block and interstitial classifiers match Google's
+real markup on both paths (previously only synthetic fixtures), and from that
+egress Google blocks the first request, so the block is IP-reputation-driven,
+not rate-driven, and had not cleared after 9.5 minutes at 2 req/min. What it
+does not establish: no results page was served, so the parser is still not
+validated against live markup, and no rate or cooldown value can be derived
+from this egress. Defaults are unchanged; the observation is only consistent
+with keeping `proxy_ban_cooldown_max` at 10m or more. Repeating the capture
+through egress Google does not block on sight (`SERP_LIVE_PROXY`, or a run
+from a residential connection) is the next step.
+
+The integration suite (not live Google) runs against any local services:
 
 ```bash
 make playwright-install

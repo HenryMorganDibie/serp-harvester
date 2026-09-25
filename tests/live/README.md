@@ -32,7 +32,8 @@ HARVESTER_LIVE=true SERPAPI_KEY=... go test ./tests/live/... -run Provider -v
   return usable results. It's written to keep that finding honest over
   time — if Google's behavior changes and real results start coming back,
   this test logs that loudly rather than silently passing either way.
-- **`TestGoogleCapture_SavesPages`**: a few queries (`SERP_CAPTURE_QUERIES`)
+- **`TestGoogleCapture_SavesPages`**: a few queries (`SERP_CAPTURE_QUERIES`;
+  `SERP_CAPTURE_MODES=http` or `playwright` limits it to one fetcher)
   via the HTTP fetcher and Chromium, 10s apart. Every page Google returns,
   results or block page, is saved to `SERP_CAPTURE_DIR` as `.html` with a
   `.json` of its classification and what the current parser extracted. These
@@ -45,7 +46,11 @@ HARVESTER_LIVE=true SERPAPI_KEY=... go test ./tests/live/... -run Provider -v
   a block to measure recovery, then writes a JSON report with outcomes, first
   pushback, largest `Retry-After`, time to recovery and suggested
   `rate_per_proxy_rps` / `proxy_ban_cooldown`. It records blocks; it never
-  tries to get past them.
+  tries to get past them. A run blocked from its first request with no
+  success is reported as an egress-level block with no supported rate,
+  rather than as a rate to stay below. Relative `SERP_CAPTURE_DIR` paths
+  resolve under `tests/live/`. Results of the first live run are in the
+  top-level README, "Measuring against Google".
 - **`TestGooglePlaywright_RecordsOutcome`**: one query through the
   Playwright fetcher, logging whether Google returned a rendered results
   page (and whether the fixture-targeted parser matched it), a block page

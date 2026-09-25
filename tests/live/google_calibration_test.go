@@ -198,6 +198,12 @@ func summarize(mode string, interval time.Duration, samples []calibrationSample)
 	}
 	rps := 1 / interval.Seconds()
 	switch {
+	case s.Outcomes["success"] == 0 && s.FirstPushback == 0:
+		// Blocked before any rate could matter: the egress itself is
+		// refused, so there is no rate to recommend.
+		s.Suggestions = append(s.Suggestions, fmt.Sprintf(
+			"blocked from the first request and never served results in %d requests: the block is not rate-driven, so no rate_per_proxy_rps is supported from this egress; use different egress",
+			s.Requests))
 	case s.FirstPushback < 0:
 		s.Suggestions = append(s.Suggestions, fmt.Sprintf(
 			"no pushback in %d requests at %.3f req/s: rate_per_proxy_rps up to %.3f is supported by this run; higher rates are untested",
@@ -206,6 +212,8 @@ func summarize(mode string, interval time.Duration, samples []calibrationSample)
 		s.Suggestions = append(s.Suggestions, fmt.Sprintf(
 			"first pushback at request %d (%s in) at %.3f req/s: keep rate_per_proxy_rps below %.3f for this egress",
 			s.FirstPushback, s.PushbackAfter.Round(time.Second), rps, rps/2))
+	}
+	if s.FirstPushback >= 0 {
 		if s.RecoveredAfter > 0 {
 			s.Suggestions = append(s.Suggestions, fmt.Sprintf(
 				"success resumed %s after the first pushback: proxy_ban_cooldown of about %s matches that",
