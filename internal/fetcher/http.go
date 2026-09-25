@@ -104,7 +104,7 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, req Request) (*Response, error)
 			return nil, err
 		}
 		if !ok {
-			return nil, blockedErrorFor(pageConsent, finalURL.String(), status)
+			return nil, blockedErrorFor(pageConsent, finalURL.String(), status, string(body))
 		}
 		if status, finalURL, header, body, err = do(client, consentReq); err != nil {
 			return nil, err
@@ -119,7 +119,7 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, req Request) (*Response, error)
 		// the browser instead.
 		kind = pageInterstitial
 	}
-	if blocked := blockedErrorFor(kind, finalURL.String(), status); blocked != nil {
+	if blocked := blockedErrorFor(kind, finalURL.String(), status, string(body)); blocked != nil {
 		return nil, blocked
 	}
 

@@ -135,9 +135,11 @@ handled, blocked pages by reason, open/in-use sessions) and two alert rules
 (`BrowserBlockedPagesHigh`, `BrowserDisconnectsHigh`). Every mode reports
 fetch outcomes by type, proxy cooldowns by reason, proxy availability and
 throttling gauges, adaptive rate decreases and hybrid failovers, with
-`ProxyPoolExhausted` and `TargetPushingBack` alerts. The Grafana dashboard
-does not chart the newer metrics yet. Pre-built Grafana dashboard in
-`deploy/grafana/provisioning/`. See
+`ProxyPoolExhausted` and `TargetPushingBack` alerts. The pre-built Grafana
+dashboard (`deploy/grafana/provisioning/`) charts all of them, in
+"Acquisition resilience" and "Browser" rows; every panel query was checked
+through Grafana's API against the Docker test stack. Grafana's memory limit
+was raised from 256M to 768M after the dashboard OOM-killed it. See
 [README "Observability"](README.md#observability-prometheus-metrics).
 
 ## 11. Failure recovery

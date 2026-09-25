@@ -201,7 +201,9 @@ services:
       resources:
         limits:
           cpus: "0.5"
-          memory: 256M
+          # Grafana 12+ idles above 200MB; 256M got it OOM-killed in a
+          # restart loop as soon as the dashboard was opened.
+          memory: 768M
     restart: unless-stopped
 
 # Optional CA bundle for building images behind a TLS-inspecting proxy:

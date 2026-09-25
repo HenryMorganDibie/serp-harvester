@@ -26,7 +26,14 @@ type BlockedError struct {
 	Reason     string
 	URL        string
 	StatusCode int
+	// Body is the block page itself (capped at maxBlockedBody), for
+	// diagnostics: checking what the target actually served when a
+	// classification looks wrong. Not part of Error().
+	Body []byte
 }
+
+// maxBlockedBody caps BlockedError.Body.
+const maxBlockedBody = 256 << 10
 
 func (e *BlockedError) Error() string {
 	return fmt.Sprintf("fetcher: blocked by %s page (status %d, url %s)", e.Reason, e.StatusCode, e.URL)
@@ -215,17 +222,20 @@ func requiresJS(rawHTML string) bool {
 }
 
 // blockedErrorFor returns the BlockedError for a non-normal page kind, or
-// nil for pageNormal.
-func blockedErrorFor(kind pageKind, pageURL string, status int) *BlockedError {
+// nil for pageNormal. body is the page as served (or rendered).
+func blockedErrorFor(kind pageKind, pageURL string, status int, body string) *BlockedError {
+	var reason string
 	switch kind {
 	case pageCaptcha:
-		return &BlockedError{Reason: "captcha", URL: pageURL, StatusCode: status}
+		reason = "captcha"
 	case pageConsent:
-		return &BlockedError{Reason: "consent", URL: pageURL, StatusCode: status}
+		reason = "consent"
 	case pageInterstitial:
-		return &BlockedError{Reason: "interstitial", URL: pageURL, StatusCode: status}
+		reason = "interstitial"
+	default:
+		return nil
 	}
-	return nil
+	return &BlockedError{Reason: reason, URL: pageURL, StatusCode: status, Body: []byte(truncate(body, maxBlockedBody))}
 }
 
 // rejectConsentForm is the consent page's "reject all" form: Google's

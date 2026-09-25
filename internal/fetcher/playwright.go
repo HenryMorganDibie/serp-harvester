@@ -229,7 +229,7 @@ func (f *PlaywrightFetcher) render(s *browserSession, req Request) (*Response, e
 		}
 		if !ok {
 			f.cfg.Metrics.IncBlocked("consent")
-			return nil, blockedErrorFor(pageConsent, s.page.URL(), status)
+			return nil, blockedErrorFor(pageConsent, s.page.URL(), status, html)
 		}
 		f.cfg.Metrics.IncConsentHandled()
 		resp, status = next, 0
@@ -242,7 +242,7 @@ func (f *PlaywrightFetcher) render(s *browserSession, req Request) (*Response, e
 		kind = classifyPage(s.page.URL(), html)
 	}
 
-	if blocked := blockedErrorFor(kind, s.page.URL(), status); blocked != nil {
+	if blocked := blockedErrorFor(kind, s.page.URL(), status, html); blocked != nil {
 		f.cfg.Metrics.IncBlocked(blocked.Reason)
 		return nil, blocked
 	}

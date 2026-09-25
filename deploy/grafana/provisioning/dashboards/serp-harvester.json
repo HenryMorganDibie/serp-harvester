@@ -3,7 +3,7 @@
   "uid": "serp-harvester",
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "10s",
   "time": { "from": "now-1h", "to": "now" },
   "panels": [
@@ -75,6 +75,153 @@
       "type": "timeseries",
       "gridPos": { "h": 6, "w": 12, "x": 0, "y": 14 },
       "targets": [{ "expr": "rate(serp_harvester_retried_total[1m]) * 60" }]
+    },
+    {
+      "id": 100,
+      "title": "Acquisition resilience",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 20},
+      "panels": []
+    },
+    {
+      "id": 8,
+      "title": "Fetch outcomes / min",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 21},
+      "targets": [
+        {"expr": "sum by (outcome) (rate(serp_harvester_fetch_outcomes_total[5m])) * 60", "legendFormat": "{{outcome}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"custom": {"stacking": {"mode": "normal", "group": "A"}, "fillOpacity": 40}}, "overrides": []}
+    },
+    {
+      "id": 9,
+      "title": "Proxy cooldowns / min by reason",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 21},
+      "targets": [
+        {"expr": "sum by (reason) (rate(serp_harvester_proxy_cooldowns_total[5m])) * 60", "legendFormat": "{{reason}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"custom": {"stacking": {"mode": "normal", "group": "A"}, "fillOpacity": 40}}, "overrides": []}
+    },
+    {
+      "id": 10,
+      "title": "Proxies available",
+      "type": "stat",
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 29},
+      "targets": [
+        {"expr": "sum(serp_harvester_proxies_available)", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "description": "Proxies not in cooldown. 0 fires ProxyPoolExhausted."
+    },
+    {
+      "id": 11,
+      "title": "Proxies cooling",
+      "type": "stat",
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 29},
+      "targets": [
+        {"expr": "sum(serp_harvester_proxies_cooling)", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1}]}}, "overrides": []}
+    },
+    {
+      "id": 12,
+      "title": "Proxies throttled",
+      "type": "stat",
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 29},
+      "targets": [
+        {"expr": "sum(serp_harvester_proxies_throttled)", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1}]}}, "overrides": []},
+      "description": "Proxies whose adaptive rate is below rate_per_proxy_rps."
+    },
+    {
+      "id": 13,
+      "title": "Blocked / rate-limited share (5m)",
+      "type": "stat",
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 29},
+      "targets": [
+        {"expr": "sum(rate(serp_harvester_fetch_outcomes_total{outcome=~\"captcha|interstitial|rate_limited\"}[5m])) / clamp_min(sum(rate(serp_harvester_fetch_outcomes_total[5m])), 1e-9)", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.05}, {"color": "red", "value": 0.25}]}}, "overrides": []}
+    },
+    {
+      "id": 14,
+      "title": "Throttling, failover and consent / min",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 34},
+      "targets": [
+        {"expr": "sum(rate(serp_harvester_ratelimit_decreases_total[5m])) * 60", "legendFormat": "rate decreases", "refId": "A"},
+        {"expr": "sum(rate(serp_harvester_fetch_failovers_total[5m])) * 60", "legendFormat": "HTTP -> browser failovers", "refId": "B"},
+        {"expr": "sum(rate(serp_harvester_http_consent_handled_total[5m])) * 60", "legendFormat": "HTTP consent handled", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {}, "overrides": []}
+    },
+    {
+      "id": 15,
+      "title": "Proxy availability",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 34},
+      "targets": [
+        {"expr": "sum(serp_harvester_proxies_available)", "legendFormat": "available", "refId": "A"},
+        {"expr": "sum(serp_harvester_proxies_cooling)", "legendFormat": "cooling", "refId": "B"},
+        {"expr": "sum(serp_harvester_proxies_throttled)", "legendFormat": "throttled", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {}, "overrides": []}
+    },
+    {
+      "id": 101,
+      "title": "Browser (mode: playwright / hybrid)",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 42},
+      "panels": []
+    },
+    {
+      "id": 16,
+      "title": "Browser sessions",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 43},
+      "targets": [
+        {"expr": "sum(serp_harvester_browser_sessions_open)", "legendFormat": "open", "refId": "A"},
+        {"expr": "sum(serp_harvester_browser_sessions_in_use)", "legendFormat": "in use", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {}, "overrides": []}
+    },
+    {
+      "id": 17,
+      "title": "Browser events / 15m",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 43},
+      "targets": [
+        {"expr": "sum(increase(serp_harvester_browser_launches_total[15m]))", "legendFormat": "launches", "refId": "A"},
+        {"expr": "sum(increase(serp_harvester_browser_launch_failures_total[15m]))", "legendFormat": "launch failures", "refId": "B"},
+        {"expr": "sum(increase(serp_harvester_browser_disconnects_total[15m]))", "legendFormat": "disconnects", "refId": "C"},
+        {"expr": "sum(increase(serp_harvester_browser_page_crashes_total[15m]))", "legendFormat": "page crashes", "refId": "D"},
+        {"expr": "sum(increase(serp_harvester_browser_navigation_timeouts_total[15m]))", "legendFormat": "navigation timeouts", "refId": "E"}
+      ],
+      "fieldConfig": {"defaults": {}, "overrides": []}
+    },
+    {
+      "id": 18,
+      "title": "Browser blocked pages / min by reason",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 43},
+      "targets": [
+        {"expr": "sum by (reason) (rate(serp_harvester_browser_blocked_total[5m])) * 60", "legendFormat": "{{reason}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"custom": {"stacking": {"mode": "normal", "group": "A"}, "fillOpacity": 40}}, "overrides": []}
+    },
+    {
+      "id": 19,
+      "title": "Consent pages handled (1h)",
+      "type": "stat",
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 51},
+      "targets": [
+        {"expr": "sum(increase(serp_harvester_browser_consent_handled_total[1h])) + sum(increase(serp_harvester_http_consent_handled_total[1h]))", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {}, "overrides": []}
     }
   ]
 }

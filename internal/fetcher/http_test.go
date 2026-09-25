@@ -82,6 +82,9 @@ func TestHTTPFetcher_CaptchaPageIsBlockedEvenWith429(t *testing.T) {
 	if !errors.As(err, &blocked) || blocked.Reason != "captcha" || blocked.StatusCode != 429 {
 		t.Fatalf("err = %v, want captcha BlockedError with status 429", err)
 	}
+	if !bytes.Contains(blocked.Body, []byte("captcha-form")) {
+		t.Error("BlockedError should carry the block page for diagnostics")
+	}
 }
 
 func TestHTTPFetcher_RedirectsToBlockPages(t *testing.T) {

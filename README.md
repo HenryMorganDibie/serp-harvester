@@ -405,6 +405,12 @@ curl localhost:9090/metrics
 # blocked{reason}, sessions open/in use)
 ```
 
+The provisioned Grafana dashboard (`deploy/grafana/provisioning/dashboards/`)
+charts these alongside the original panels: fetch outcomes, cooldowns by
+reason, proxy availability/cooling/throttling, blocked share, throttling and
+failover rates, and the browser row (sessions, launches, crashes, blocked
+pages by reason).
+
 `internal/metrics.PrometheusCollector` reads the same atomic counters the
 `println` reporter uses, on every scrape — so a client's existing
 Prometheus/Grafana stack can alert on failure rate, dropped-job rate, and
@@ -714,7 +720,20 @@ make e2e                          # the harvester-playwright image end to end, a
 ```
 
 Docker is only a convenience for these runs; the application itself never
-needs it. The same gated tests run against any local services:
+needs it.
+
+### Measuring against Google
+
+Two gated live tests are the tools for tuning against the real target (see
+`tests/live/README.md`): `TestGoogleCapture_SavesPages` saves the pages
+Google actually returns (results or block pages, via HTTP and Chromium) as
+the material for retargeting the parser, and
+`TestGoogleCalibration_MeasuresPushback` sends a capped number of queries at
+a fixed pace and reports when pushback starts, any `Retry-After`, and how
+long until success resumes, with suggested `rate_per_proxy_rps` and
+`proxy_ban_cooldown` values. Neither has been run yet: the environment this
+was built in cannot reach Google. Their output depends heavily on the egress
+IP; a datacenter IP is likely to see mostly block pages. The same gated tests run against any local services:
 
 ```bash
 make playwright-install
