@@ -9,10 +9,15 @@
 # pinned npm package, see scripts/install-playwright.sh). A unit test keeps
 # this tag, the script and go.mod on the same version. Nothing is downloaded
 # at runtime. No credentials are baked in.
+# EXTRA_CA: optional CA bundle for building behind a TLS-inspecting proxy
+# (BuildKit secret "extra_ca", see deploy/README.md). Unused when absent;
+# never stored in the image.
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=secret,id=extra_ca,required=false \
+    if [ -s /run/secrets/extra_ca ]; then export SSL_CERT_FILE=/run/secrets/extra_ca; fi; \
+    go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/harvester ./cmd/harvester
 
@@ -21,7 +26,9 @@ FROM mcr.microsoft.com/playwright:v1.60.0-noble
 # preinstalled); the driver goes next to it.
 ENV PLAYWRIGHT_DRIVER_PATH=/opt/ms-playwright-go
 COPY scripts/install-playwright.sh /tmp/install-playwright.sh
-RUN PLAYWRIGHT_SKIP_BROWSER_INSTALL=1 sh /tmp/install-playwright.sh \
+RUN --mount=type=secret,id=extra_ca,required=false \
+    if [ -s /run/secrets/extra_ca ]; then export CURL_CA_BUNDLE=/run/secrets/extra_ca; fi; \
+    PLAYWRIGHT_SKIP_BROWSER_INSTALL=1 sh /tmp/install-playwright.sh \
  && rm /tmp/install-playwright.sh \
  && chmod -R a+rX /opt/ms-playwright-go
 WORKDIR /app

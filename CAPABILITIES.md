@@ -27,10 +27,10 @@ Both, behind one interface (`internal/fetcher.Fetcher`):
 | Featured snippet / PAA     | Built (fixture-verified)     | Built (fixture-verified) |
 | AI Overview (inline)       | Built (fixture-verified)     | Built (fixture-verified) |
 | AI Overview (page-token follow-up) | Not applicable — this is a provider-specific async mechanism | Built and tested (`internal/fetcher/provider_test.go`) |
-| Consent/session handling   | Cookie jar implemented; **confirmed insufficient** — see below | Not applicable — provider handles this |
-| CAPTCHA / bot-detection handling | Not implemented (deliberately — see [README "Honest limitations"](README.md#honest-limitations)) | Handled by the provider as their product |
+| Consent/session handling   | Cookie jar + "reject all" form submission; the plain-HTTP live result is **still blocked** (JS check) — see below | Not applicable — provider handles this |
+| CAPTCHA / bot-detection handling | Detected and classified (CAPTCHA, JS check, consent wall), then routed around via proxy cooldown and failover; never solved or evaded (deliberately — see [README "Honest limitations"](README.md#honest-limitations)) | Handled by the provider as their product |
 | Proxy rotation & rate limiting | Built: health-tracked pool, 3 rotation strategies, dynamic reload (`internal/proxy`, `internal/ratelimit`) | Built, same code path |
-| Rate-limit (429) handling  | N/A — direct mode doesn't currently distinguish 429 from other errors | Built: parses `Retry-After`, worker waits the exact duration instead of guessing |
+| Rate-limit (429) handling  | Built: `Retry-After` cools that proxy for exactly that long, work fails over to other proxies, and adaptive throttling halves that proxy's rate | Built: parses `Retry-After`, worker waits the exact duration instead of guessing |
 | Locale/device targeting    | Built: `gl`/`hl` params passed through | Built: `gl`/`hl`/`device` params passed through |
 | Persistent storage          | PostgreSQL (JSONB columns) or JSON-Lines, either fetch path | Same |
 | Self-hostable               | Yes | Yes |
@@ -61,6 +61,19 @@ blocked, is unmeasured. `HARVESTER_LIVE=true go test ./tests/live/... -run
 Playwright -v` is the test that measures it. Rendering does not make direct
 scraping production-ready: Google still challenges real browsers, and the
 parser's selectors are still fixture-targeted.
+
+**Self-hosted resilience, without a SERP API.** All direct paths (`live`,
+`playwright`, and `hybrid`, which uses HTTP first and the browser only for
+pages that need JavaScript) share one result classification that drives
+adaptive per-proxy throttling, outcome-weighted proxy cooldowns, failover
+and retries; in browser modes, Chromium and crashed pages recover on their
+own. This is verified end to end against real Redis, PostgreSQL and
+Chromium with a fictional site and scripted proxies, in Go
+(`tests/integration`) and with the deployed Docker image (`make e2e`). It
+has **not** been run against live Google, so it shows the system reacts
+correctly to rate limits and blocks, not that it avoids or survives them at
+any particular volume. See
+[README "Acquisition resilience"](README.md#acquisition-resilience).
 
 **Recommended path for real volume:** the provider fetch path. It's fully
 built and unit-tested against a realistic fixture and a local `httptest`

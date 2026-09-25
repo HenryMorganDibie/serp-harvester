@@ -29,9 +29,21 @@ type Counters struct {
 	// selector drift".
 	CalibrationFlagged uint64
 
-	// ProxyBanned counts how many times a proxy transitioned into cooldown
-	// after repeated failures (see proxy.Pool.ReportResult).
+	// ProxyBanned counts how many times a proxy transitioned into cooldown,
+	// for any reason (see Cooldowns for the breakdown).
 	ProxyBanned uint64
+
+	// RateDecreases, Failovers and HTTPConsentHandled: see acquisition.go.
+	RateDecreases      uint64
+	Failovers          uint64
+	HTTPConsentHandled uint64
+
+	outcomes  labeledCounter
+	cooldowns labeledCounter
+
+	// ProxyGauges, if set, is read on every scrape for the proxy
+	// availability and throttling gauges.
+	ProxyGauges func() ProxyGauges
 
 	// Browser holds headless-browser counters when mode: playwright is
 	// active, and is nil otherwise. Set it before starting the reporter or
@@ -120,6 +132,11 @@ func (c *Counters) report(elapsed time.Duration) {
 		elapsed.Round(time.Second), s.Success, s.Failure, s.Retried, s.Dropped, total, rps, dailyProjection,
 		s.AIOverviewPresent, s.CalibrationFlagged, s.ProxyBanned,
 	)
+	if c.ProxyGauges != nil {
+		g := c.ProxyGauges()
+		fmt.Printf("[metrics] proxies available=%d cooling=%d throttled=%d failovers=%d\n",
+			g.Available, g.Cooling, g.Throttled, atomic.LoadUint64(&c.Failovers))
+	}
 	if c.Browser != nil {
 		b := c.Browser.Snapshot()
 		fmt.Printf(

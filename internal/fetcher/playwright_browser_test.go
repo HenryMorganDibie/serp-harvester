@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -590,5 +591,96 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("condition not reached within 10s")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestPlaywright_LaunchBackoffAfterFailedRelaunch(t *testing.T) {
+	page := fixture(t, "js_results.html")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serveHTML(w, http.StatusOK, page)
+	}))
+	defer srv.Close()
+
+	f, m := newTestPlaywright(t, PlaywrightConfig{Endpoint: srv.URL + "/search"})
+	goodPath := f.cfg.ExecutablePath
+
+	// The browser dies and can't be relaunched (binary gone).
+	f.mu.Lock()
+	b := f.browser
+	f.cfg.ExecutablePath = "/nonexistent/chromium"
+	f.mu.Unlock()
+	b.Close()
+
+	if _, err := f.Fetch(context.Background(), Request{Query: "q"}); err == nil {
+		t.Fatal("expected the relaunch to fail")
+	}
+	start := time.Now()
+	_, err := f.Fetch(context.Background(), Request{Query: "q"})
+	if !errors.Is(err, ErrBrowserUnavailable) {
+		t.Fatalf("second Fetch = %v, want ErrBrowserUnavailable during backoff", err)
+	}
+	if time.Since(start) > 500*time.Millisecond {
+		t.Error("a fetch during launch backoff should fail fast, not attempt a launch")
+	}
+	if s := m.Snapshot(); s.LaunchFailures != 1 {
+		t.Errorf("launch failures = %d, want 1 (no launch attempt during backoff)", s.LaunchFailures)
+	}
+
+	// The binary is back and the backoff has elapsed: the fetcher recovers.
+	f.mu.Lock()
+	f.cfg.ExecutablePath = goodPath
+	f.nextLaunch = time.Time{}
+	f.mu.Unlock()
+	if _, err := f.Fetch(context.Background(), Request{Query: "q"}); err != nil {
+		t.Fatalf("Fetch after recovery: %v", err)
+	}
+	if s := m.Snapshot(); s.Launches != 2 {
+		t.Errorf("launches = %d, want 2", s.Launches)
+	}
+}
+
+func TestPlaywright_RecoversFromPageCrash(t *testing.T) {
+	page := fixture(t, "js_results.html")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serveHTML(w, http.StatusOK, page)
+	}))
+	defer srv.Close()
+
+	f, m := newTestPlaywright(t, PlaywrightConfig{Endpoint: srv.URL + "/search"})
+	if _, err := f.Fetch(context.Background(), Request{Query: "q"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Crash the idle session's renderer.
+	f.mu.Lock()
+	s := f.idle[0]
+	f.mu.Unlock()
+	s.page.Goto("chrome://crash")
+	waitFor(t, func() bool { return s.crashed.Load() })
+
+	if _, err := f.Fetch(context.Background(), Request{Query: "q"}); err != nil {
+		t.Fatalf("Fetch after page crash: %v", err)
+	}
+	snap := m.Snapshot()
+	if snap.PageCrashes != 1 || snap.Launches != 1 {
+		t.Errorf("page crashes=%d launches=%d; want 1 crash handled without a browser relaunch", snap.PageCrashes, snap.Launches)
+	}
+	if snap.SessionsOpen != 1 {
+		t.Errorf("sessions open = %d; the crashed session should have been replaced, not kept", snap.SessionsOpen)
+	}
+}
+
+func TestPlaywright_UnreachableProxyIsTransportError(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+
+	f, _ := newTestPlaywright(t, PlaywrightConfig{Endpoint: "http://serp.fixture.test/search"})
+	_, err = f.Fetch(context.Background(), Request{Query: "q", ProxyURL: "http://" + addr})
+	if Classify(err) != OutcomeTransport {
+		t.Fatalf("err = %v classified %s, want transport", err, Classify(err))
 	}
 }

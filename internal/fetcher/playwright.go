@@ -1,7 +1,6 @@
 package fetcher
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
 	"github.com/playwright-community/playwright-go"
 
 	"github.com/HenryMorganDibie/serp-harvester/internal/metrics"
@@ -54,6 +52,13 @@ type PlaywrightFetcher struct {
 	idle    []*browserSession
 	open    int
 
+	// Launch backoff: after a failed (re)launch, fetches fail fast with
+	// ErrBrowserUnavailable until nextLaunch instead of each retrying a
+	// launch that just failed. Guarded by mu.
+	launchFailures int
+	nextLaunch     time.Time
+	lastLaunchErr  error
+
 	// closed is atomic, not guarded by mu, because the browser's
 	// disconnect handler reads it from the driver's event goroutine,
 	// possibly while mu is held around a launch.
@@ -92,20 +97,15 @@ type PlaywrightConfig struct {
 	Metrics *metrics.BrowserCounters
 }
 
-// BlockedError reports a page the fetcher recognised as a block it does not
-// get past. Reason is "captcha", "consent" or "interstitial".
-type BlockedError struct {
-	Reason     string
-	URL        string
-	StatusCode int
-}
-
-func (e *BlockedError) Error() string {
-	return fmt.Sprintf("playwright fetcher: blocked by %s page (status %d, url %s)", e.Reason, e.StatusCode, e.URL)
-}
-
 // ErrFetcherClosed is returned by Fetch after Close.
 var ErrFetcherClosed = errors.New("playwright fetcher: closed")
+
+// ErrBrowserUnavailable is returned while Chromium is in launch backoff
+// after a failed launch or relaunch.
+var ErrBrowserUnavailable = errors.New("playwright fetcher: browser unavailable (launch backoff)")
+
+// maxLaunchBackoff caps the wait between relaunch attempts.
+const maxLaunchBackoff = 30 * time.Second
 
 type browserSession struct {
 	key     string
@@ -113,6 +113,7 @@ type browserSession struct {
 	context playwright.BrowserContext
 	page    playwright.Page
 	uses    int
+	crashed atomic.Bool // set by the page's crash handler
 }
 
 // maxBodyBytes matches HTTPFetcher's body cap.
@@ -228,7 +229,7 @@ func (f *PlaywrightFetcher) render(s *browserSession, req Request) (*Response, e
 		}
 		if !ok {
 			f.cfg.Metrics.IncBlocked("consent")
-			return nil, &BlockedError{Reason: "consent", URL: s.page.URL(), StatusCode: status}
+			return nil, blockedErrorFor(pageConsent, s.page.URL(), status)
 		}
 		f.cfg.Metrics.IncConsentHandled()
 		resp, status = next, 0
@@ -241,16 +242,9 @@ func (f *PlaywrightFetcher) render(s *browserSession, req Request) (*Response, e
 		kind = classifyPage(s.page.URL(), html)
 	}
 
-	switch kind {
-	case pageCaptcha:
-		f.cfg.Metrics.IncBlocked("captcha")
-		return nil, &BlockedError{Reason: "captcha", URL: s.page.URL(), StatusCode: status}
-	case pageConsent:
-		f.cfg.Metrics.IncBlocked("consent")
-		return nil, &BlockedError{Reason: "consent", URL: s.page.URL(), StatusCode: status}
-	case pageInterstitial:
-		f.cfg.Metrics.IncBlocked("interstitial")
-		return nil, &BlockedError{Reason: "interstitial", URL: s.page.URL(), StatusCode: status}
+	if blocked := blockedErrorFor(kind, s.page.URL(), status); blocked != nil {
+		f.cfg.Metrics.IncBlocked(blocked.Reason)
+		return nil, blocked
 	}
 
 	if status == 429 {
@@ -261,7 +255,7 @@ func (f *PlaywrightFetcher) render(s *browserSession, req Request) (*Response, e
 		return nil, &RateLimitError{StatusCode: status, RetryAfter: retryAfter, Body: truncate(html, 512)}
 	}
 	if status >= 400 {
-		return nil, fmt.Errorf("playwright fetcher: unexpected status %d", status)
+		return nil, &StatusError{StatusCode: status}
 	}
 
 	if f.cfg.WaitSelector != "" {
@@ -293,6 +287,11 @@ func (f *PlaywrightFetcher) navigationError(err error) error {
 		f.cfg.Metrics.IncNavigationTimeouts()
 		return fmt.Errorf("playwright fetcher: navigation timed out after %s: %w", f.cfg.Timeout, err)
 	}
+	// Chromium network failures (DNS, connect, proxy, TLS) surface as
+	// net::ERR_* and are classified as transport errors.
+	if strings.Contains(err.Error(), "net::ERR_") {
+		return &TransportError{Err: fmt.Errorf("playwright fetcher: navigation failed: %w", err)}
+	}
 	return fmt.Errorf("playwright fetcher: navigation failed: %w", err)
 }
 
@@ -320,12 +319,28 @@ func (f *PlaywrightFetcher) acquire(ctx context.Context, req Request) (*browserS
 		<-f.slots
 		return nil, err
 	}
-	for i, s := range f.idle {
-		if s.key == key && s.browser == browser {
-			f.idle = append(f.idle[:i], f.idle[i+1:]...)
-			f.mu.Unlock()
-			return s, nil
+	var stale []*browserSession
+	var reuse *browserSession
+	kept := f.idle[:0]
+	for _, s := range f.idle {
+		switch {
+		case s.crashed.Load() || s.page.IsClosed():
+			// Died while idle (renderer crash, closed page): drop it.
+			stale = append(stale, s)
+			f.open--
+		case reuse == nil && s.key == key && s.browser == browser:
+			reuse = s
+		default:
+			kept = append(kept, s)
 		}
+	}
+	f.idle = kept
+	if reuse != nil {
+		f.mu.Unlock()
+		for _, s := range stale {
+			f.closeSession(s)
+		}
+		return reuse, nil
 	}
 	var evict *browserSession
 	if f.open >= f.cfg.PoolSize && len(f.idle) > 0 {
@@ -335,6 +350,9 @@ func (f *PlaywrightFetcher) acquire(ctx context.Context, req Request) (*browserS
 	f.open++ // reserve before unlocking so concurrent acquires respect the cap
 	f.mu.Unlock()
 
+	for _, s := range stale {
+		f.closeSession(s)
+	}
 	if evict != nil {
 		f.closeSession(evict)
 	}
@@ -357,7 +375,8 @@ func (f *PlaywrightFetcher) release(s *browserSession, healthy bool) {
 	f.cfg.Metrics.AddSessionsInUse(-1)
 	s.uses++
 	f.mu.Lock()
-	keep := healthy && !f.closed.Load() && s.uses < f.cfg.MaxSessionUses && s.browser == f.browser && s.browser.IsConnected()
+	keep := healthy && !f.closed.Load() && !s.crashed.Load() && s.uses < f.cfg.MaxSessionUses &&
+		s.browser == f.browser && s.browser.IsConnected()
 	if keep {
 		f.idle = append(f.idle, s)
 	} else {
@@ -387,6 +406,9 @@ func (f *PlaywrightFetcher) browserLocked() (playwright.Browser, error) {
 		// Close's drain timeout.
 		return nil, ErrFetcherClosed
 	}
+	if time.Now().Before(f.nextLaunch) {
+		return nil, fmt.Errorf("%w: last launch error: %v", ErrBrowserUnavailable, f.lastLaunchErr)
+	}
 	if f.browser != nil {
 		kept := f.idle[:0]
 		for _, s := range f.idle {
@@ -413,8 +435,19 @@ func (f *PlaywrightFetcher) browserLocked() (playwright.Browser, error) {
 	}
 	b, err := f.pw.Chromium.Launch(opts)
 	if err != nil {
+		// Back off exponentially (1s, 2s, 4s ... 30s) so a browser that
+		// can't start doesn't turn every fetch into a launch attempt.
+		f.launchFailures++
+		backoff := time.Second << min(f.launchFailures-1, 5)
+		if backoff > maxLaunchBackoff {
+			backoff = maxLaunchBackoff
+		}
+		f.nextLaunch = time.Now().Add(backoff)
+		f.lastLaunchErr = err
+		f.cfg.Metrics.IncLaunchFailures()
 		return nil, fmt.Errorf("playwright fetcher: launch chromium: %w", err)
 	}
+	f.launchFailures, f.nextLaunch, f.lastLaunchErr = 0, time.Time{}, nil
 	b.OnDisconnected(func(playwright.Browser) {
 		if !f.closed.Load() {
 			f.cfg.Metrics.IncDisconnects()
@@ -464,7 +497,14 @@ func (f *PlaywrightFetcher) newSession(browser playwright.Browser, req Request, 
 		bctx.Close()
 		return nil, fmt.Errorf("playwright fetcher: new page: %w", err)
 	}
-	return &browserSession{key: key, browser: browser, context: bctx, page: page}, nil
+	s := &browserSession{key: key, browser: browser, context: bctx, page: page}
+	page.OnCrash(func(playwright.Page) {
+		// The in-flight navigation fails on its own; the flag makes sure
+		// the session is discarded rather than reused.
+		s.crashed.Store(true)
+		f.cfg.Metrics.IncPageCrashes()
+	})
+	return s, nil
 }
 
 // Close closes every session, the browser and the Playwright driver. It
@@ -584,47 +624,6 @@ func proxySettings(proxyURL string) (*playwright.Proxy, error) {
 	}
 	return p, nil
 }
-
-type pageKind int
-
-const (
-	pageNormal pageKind = iota
-	pageConsent
-	pageCaptcha
-	pageInterstitial
-)
-
-// classifyPage recognises the non-results pages Google is known to serve,
-// from the final URL and the rendered DOM. It only classifies; it never
-// interacts with a CAPTCHA.
-func classifyPage(pageURL, html string) pageKind {
-	u, _ := url.Parse(pageURL)
-	if u != nil {
-		switch {
-		case strings.Contains(u.Path, "/sorry/"):
-			return pageCaptcha
-		case strings.Contains(u.Path, "/httpservice/retry/enablejs"):
-			return pageInterstitial
-		}
-	}
-
-	doc, err := goquery.NewDocumentFromReader(bytes.NewReader([]byte(html)))
-	if err != nil {
-		return pageNormal
-	}
-	if doc.Find(`#captcha-form, form[action*="/sorry/"], .g-recaptcha, #recaptcha, iframe[src*="recaptcha"]`).Length() > 0 {
-		return pageCaptcha
-	}
-	if (u != nil && strings.HasPrefix(u.Hostname(), "consent.")) ||
-		doc.Find(`form[action*="consent"], input[name="set_eom"]`).Length() > 0 {
-		return pageConsent
-	}
-	return pageNormal
-}
-
-// rejectConsentForm is the consent page's "reject all" form: Google's
-// consent forms carry a hidden set_eom input, true for "reject all".
-const rejectConsentForm = `form:has(input[name="set_eom"][value="true"])`
 
 // submitRejectConsent clicks the submit control of the consent page's
 // "reject all" form and waits for the resulting navigation away from the

@@ -1,0 +1,37 @@
+# End-to-end config for deploy/docker-compose.test.yml (profile e2e). The
+# real harvester-playwright image in hybrid mode, against the fictional
+# fixture site (tests/integration/fixture) through its three scripted
+# proxies. No real search engine is involved.
+mode: hybrid
+
+queue_backend: redis
+redis_addr: "redis:6379"
+redis_stream: "serp-harvester:queries"
+redis_group: "harvesters"
+redis_consumer: "e2e-1"
+redis_seed_queue: false
+
+concurrency: 2
+max_retries: 4
+rate_per_proxy_rps: 5
+rate_burst: 2
+adaptive_rate: true
+proxies:
+  - "http://fixture:8082" # always CAPTCHA'd
+  - "http://fixture:8083" # 429 Retry-After: 30 on its first request
+  - "http://fixture:8081" # good
+proxy_ban_fails: 3
+proxy_ban_cooldown: 1h
+proxy_strategy: round_robin
+
+live_endpoint: "http://serp.fixture.test/search"
+request_timeout: 20s
+browser_pool_size: 2
+browser_wait_selector: ".organic-result"
+
+sink_backend: postgres
+postgres_dsn_env: POSTGRES_DSN
+
+output_path: "-"
+report_interval: 5s
+metrics_addr: ":9090"

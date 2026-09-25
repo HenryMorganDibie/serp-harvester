@@ -24,6 +24,15 @@ proxies, no network access required.
   infrastructure. No Apify dependency.
 - **Scaling**: Redis Streams distributed queue, horizontal worker scaling,
   per-proxy rate limiting, retry/backoff, Prometheus metrics.
+- **Acquisition resilience** (self-hosted, no SERP API needed): every fetch
+  result is classified (rate limit, CAPTCHA, consent wall, JS check,
+  timeout, network, 4xx/5xx) and drives adaptive per-proxy throttling,
+  health-based proxy cooldowns, failover to another proxy or to the browser,
+  and retries. Blocks are detected and routed around, never bypassed. See
+  [Acquisition resilience](#acquisition-resilience).
+- **Reproducible testing**: `make integration` / `make e2e` run the suite and
+  the deployed Playwright image against real Redis, PostgreSQL and Chromium
+  in Docker; the same tests run without Docker against any local services.
 - **Job submission**: an HTTP API (`cmd/api`) for `POST /jobs` +
   `GET /jobs/{run_id}`, plus real cron-based scheduled harvesting — both as
   pure queue producers — see [Job/API layer](#jobapi-layer).
@@ -77,7 +86,7 @@ queue.Source ──▶ worker.Pool (N goroutines)
 (Memory or           │
  Redis Streams)       ├─▶ proxy.Pool.Next()      (health-tracked rotation: round-robin, random, or weighted-by-success-rate)
                        ├─▶ ratelimit.Limiter.Wait (token bucket, keyed per proxy; honors provider Retry-After on 429)
-                       ├─▶ fetcher.Fetcher.Fetch  (mock fixtures, live HTTP, headless Chromium via Playwright, or a third-party provider)
+                       ├─▶ fetcher.Fetcher.Fetch  (mock fixtures, live HTTP, headless Chromium via Playwright, HTTP->browser hybrid, or a third-party provider)
                        ├─▶ worker.Parser.Parse    (HTML or provider-JSON, structured extraction + drift detection)
                        └─▶ store.Sink.Write       (JSON-Lines, or PostgreSQL with JSONB columns)
 
@@ -224,14 +233,31 @@ using a fast `@every 100ms` schedule so CI stays quick.
 
 ## Proxy management
 
-`internal/proxy.Pool` tracks per-proxy health (success/failure counts,
-consecutive-failure cooldown) and supports three rotation strategies:
+`internal/proxy.Pool` tracks per-proxy health and cools proxies down based
+on what their requests ran into (`Pool.ReportOutcome`):
+
+| Outcome through a proxy                  | Effect |
+|-------------------------------------------|--------|
+| success                                   | resets the failure streak and cooldown escalation |
+| timeout, network error, 5xx               | counts toward `proxy_ban_fails` in a row, then cooldown |
+| CAPTCHA / "unusual traffic" / JS-check page | cooldown immediately |
+| 429 with `Retry-After`                    | cooldown for exactly `Retry-After`, no escalation |
+| 429 without `Retry-After`                 | cooldown immediately |
+| consent wall, 4xx, cancellation           | nothing: not the proxy's fault |
+
+Repeat cooldowns double (`proxy_ban_cooldown`, then 2x, 4x ... up to
+`proxy_ban_cooldown_max`) until the proxy succeeds again. Each proxy also
+keeps a recent-health score (an exponentially weighted success average), and
+there are three rotation strategies:
 
 ```yaml
 proxy_strategy: round_robin   # default: predictable, fair
 # proxy_strategy: random               # avoids synchronized patterns across many processes
-# proxy_strategy: weighted_success_rate # biases toward proxies with a better observed success rate
+# proxy_strategy: weighted_success_rate # biases toward proxies with better *recent* health
 ```
+
+When every proxy is cooling, a job waits for the soonest one to recover (up
+to `max_proxy_wait`) instead of burning its retries.
 
 `Pool.Reload(urls)` swaps the proxy list at runtime — the seam for pointing
 at a vendor's proxy-list API or a file watcher instead of a static config
@@ -243,9 +269,12 @@ special handling — Go's `net/http` applies the Basic auth automatically, for
 both plain HTTP proxying and HTTPS `CONNECT` tunneling, confirmed by
 `TestHTTPFetcher_AuthenticatedProxy` against a fake proxy server that
 verifies the header actually arrives. See `internal/proxy/pool_test.go`
-(9 tests, including a real bug this test suite caught: `Reload` originally
+(16 tests, including two real bugs the suite caught: `Reload` originally
 lost health stats for retained proxies due to a map that was only populated
-on the empty-list code path).
+on the empty-list code path; and a proxy that kept failing after its first
+cooldown was never banned again, because the ban only triggered when the
+failure count *equalled* the threshold. `TestPool_RebansAfterCooldownExpires`
+fails against the old code).
 
 ## Persistent storage (PostgreSQL)
 
@@ -365,8 +394,15 @@ curl localhost:9090/metrics
 # serp_harvester_failure_total 3
 # serp_harvester_dropped_total 0
 # serp_harvester_retried_total 5
-# mode: playwright adds serp_harvester_browser_* (launches, disconnects,
-# navigation timeouts, consent handled, blocked{reason}, sessions open/in use)
+# serp_harvester_fetch_outcomes_total{outcome="captcha"} 1   # every attempt, by outcome
+# serp_harvester_proxy_cooldowns_total{reason="blocked"} 1   # failures | blocked | rate_limited
+# serp_harvester_proxies_available 2 / serp_harvester_proxies_cooling 1 / serp_harvester_proxies_throttled 1
+# serp_harvester_ratelimit_decreases_total 3                 # adaptive throttling steps
+# serp_harvester_fetch_failovers_total 12                    # hybrid: HTTP -> browser
+# serp_harvester_http_consent_handled_total 1
+# mode: playwright/hybrid add serp_harvester_browser_* (launches, launch
+# failures, disconnects, page crashes, navigation timeouts, consent handled,
+# blocked{reason}, sessions open/in use)
 ```
 
 `internal/metrics.PrometheusCollector` reads the same atomic counters the
@@ -476,7 +512,12 @@ Live mode issues real HTTP requests directly to the configured endpoint
   config),
 - carries a cookie jar so a consent decision persists across requests within
   a run (`internal/fetcher/http.go`), the same way a browser remembers you
-  clicked "I agree",
+  clicked "I agree", and submits a consent page's own "reject all" form when
+  one appears,
+- reports what came back precisely instead of handing every page to the
+  parser: 429 (with `Retry-After`), CAPTCHA, JS-check shell, consent wall and
+  4xx/5xx are distinct, classified errors (see
+  [Acquisition resilience](#acquisition-resilience)),
 - does **not** implement headless rendering, CAPTCHA solving, or browser
   fingerprint spoofing.
 
@@ -611,6 +652,77 @@ Known limitations of this mode:
 - One browser per process: a Chromium crash fails that process's in-flight
   fetches (they are retried) before the relaunch.
 
+## Acquisition resilience
+
+The self-hosted path (`live`, `playwright`, `hybrid`) needs no paid SERP API.
+What makes it robust is not getting past blocks, which it deliberately does
+not try to do, but reacting to them correctly. Every fetch result is
+classified once (`internal/fetcher/classify.go`) and that outcome drives
+everything else in the worker (`internal/worker/pool.go`):
+
+| Outcome | Detected by | Retry | Proxy | Throttle |
+|---------|-------------|-------|-------|----------|
+| `rate_limited` | HTTP 429 | on another proxy at once; waits `Retry-After` if none | cooldown = `Retry-After` | halve that proxy's rate |
+| `captcha` | `/sorry/` URL, CAPTCHA form, reCAPTCHA markers | on another proxy at once | cooldown now, escalating | halve |
+| `interstitial` | JS-check redirect or `<noscript>` enablejs shell | another proxy; in `hybrid`, the browser renders it | cooldown now, escalating | halve |
+| `consent` | consent host or form, when no "reject all" form works | yes; in `hybrid`, the browser | none | none |
+| `timeout`, `transport`, `http_5xx` | net errors, `net::ERR_*`, status | yes, with backoff | counts toward `proxy_ban_fails` | none |
+| `http_4xx` | status | no: the job ends | none | none |
+
+- **Adaptive per-proxy throttling** (`adaptive_rate`, default on): the
+  per-proxy token bucket is halved on a rate limit or block (down to
+  `rate_min_rps`) and recovers by 5% of the configured rate per success.
+- **Consent**: both fetchers pre-seed the same consent cookie, and when a
+  consent page still appears they submit its **"reject all"** form: a POST
+  in the HTTP fetcher, a click in the browser. A consent page without such a
+  form is reported, not guessed at.
+- **Failover** (`mode: hybrid`): plain HTTP first, and the browser only for a
+  JS-check page or a consent wall HTTP couldn't dismiss
+  (`fetcher.FailoverFetcher`). CAPTCHA and rate-limit responses are never
+  retried in the browser; a browser doesn't make them go away.
+- **Browser recovery** (`playwright`, `hybrid`): a crashed Chromium is
+  relaunched on the next fetch, with exponential launch backoff (1s to 30s)
+  if the launch itself fails; a crashed page (renderer) or a closed page is
+  discarded and replaced; sessions are recycled after
+  `browser_max_session_uses` or any failure.
+- **Retries** stop early for errors a retry can't fix (4xx), and every wait
+  (backoff, cooldown, rate limit) ends immediately on shutdown.
+
+Not implemented, on purpose: CAPTCHA solving, fingerprint spoofing or
+randomisation, stealth patches, or anything else meant to defeat bot
+detection.
+
+**What is verified, and where.** Unit tests cover classification, the HTTP
+fetcher against scripted local servers, cooldown escalation, AIMD
+throttling and the worker's failover decisions. `tests/integration` runs the
+whole pipeline in `hybrid` mode against real Redis, PostgreSQL and Chromium,
+through three scripted local proxies (one always CAPTCHA'd, one
+rate-limited, one good), and checks that every result lands in PostgreSQL,
+that the CAPTCHA'd proxy is used exactly once, and that blocks, cooldowns,
+throttling and failovers appear in the metrics. `make e2e` does the same
+with the deployed `harvester-playwright` image. All of it uses a fictional
+site (`tests/integration/fixture`); **none of it has been run against live
+Google**, so the real block rate, and how well these reactions hold up
+against it, are unmeasured.
+
+### Running the tests with or without Docker
+
+```bash
+go test ./...                     # unit tests; browser/DB tests skip without their services
+make integration                  # everything, in Docker: real Redis, PostgreSQL, Chromium
+make e2e                          # the harvester-playwright image end to end, against the fixture site
+```
+
+Docker is only a convenience for these runs; the application itself never
+needs it. The same gated tests run against any local services:
+
+```bash
+make playwright-install
+INTEGRATION=1 REDIS_ADDR=localhost:6379 \
+  POSTGRES_TEST_DSN=postgres://user:pass@localhost:5432/db?sslmode=disable \
+  SERP_HARVESTER_PLAYWRIGHT=1 go test ./...
+```
+
 ## Honest limitations
 
 Overselling readiness here would be a worse outcome than being precise about
@@ -650,7 +762,13 @@ client's volume, not just a pitch:
    [third-party provider fetcher](#third-party-provider-fetcher) is the
    honest way this actually gets closed for a real client instead.
 
-4. **Google's Terms of Service restrict automated querying.** Whether and
+4. **The resilience logic is tuned against fixtures, not live traffic.**
+   Cooldown lengths, throttling steps and block markers are reasoned
+   defaults and are tested against scripted local responses. How Google
+   actually rate-limits and challenges a given egress, and whether these
+   reactions keep a real proxy pool productive, has not been measured.
+
+5. **Google's Terms of Service restrict automated querying.** Whether and
    how to operate at volume against Google directly (vs. via a licensed
    data provider) is a legal/business decision for the client, made with
    their counsel — this repo surfaces that decision point (the
@@ -690,8 +808,9 @@ internal/scheduler/     Cron-based recurring harvests — also a pure queue.Prod
 internal/queue/         Job sources/producer: in-memory, and Redis Streams for multi-process/host scaling
 internal/proxy/         Proxy pool: health tracking, dynamic reload, 3 rotation strategies
 internal/ratelimit/     Per-key token-bucket rate limiter
-internal/fetcher/       Fetcher interface + Mock, direct HTTP, headless Chromium (playwright.go), and
-                        third-party provider implementations, plus RateLimitError/Retry-After parsing (errors.go)
+internal/fetcher/       Fetcher interface + Mock, direct HTTP, headless Chromium (playwright.go),
+                        HTTP->browser failover (failover.go) and third-party provider implementations,
+                        result classification (classify.go) and RateLimitError/Retry-After parsing (errors.go)
 internal/parser/        HTML and provider-JSON → SerpResult extraction, with drift detection
 internal/worker/        The pool tying fetch → parse → sink together with retry/backoff
 internal/metrics/       Run counters, latency percentile tracking, periodic reporting,
@@ -701,7 +820,9 @@ internal/config/        YAML config loading
 configs/                Example config
 deploy/                 Docker Compose (harvester+Redis+Prometheus+Grafana, opt-in Playwright harvester),
                         systemd units, Dockerfiles (Alpine default, official Playwright image for mode: playwright)
+tests/integration/      Pipeline test against real Redis/PostgreSQL/Chromium + the fixture site and proxies
 tests/live/             Real-network integration tests, gated behind HARVESTER_LIVE=true (never run in CI)
+scripts/                Playwright driver installer; compose-test.sh for Docker integration/e2e runs
 ```
 
 ## Contact

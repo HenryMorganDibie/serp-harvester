@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -30,6 +31,17 @@ type PrometheusCollector struct {
 	latencyP50         *prometheus.Desc
 	latencyP95         *prometheus.Desc
 	latencyP99         *prometheus.Desc
+
+	fetchOutcomes      *prometheus.Desc
+	proxyCooldowns     *prometheus.Desc
+	rateDecreases      *prometheus.Desc
+	failovers          *prometheus.Desc
+	httpConsent        *prometheus.Desc
+	proxiesAvailable   *prometheus.Desc
+	proxiesCooling     *prometheus.Desc
+	proxiesThrottled   *prometheus.Desc
+	browserLaunchFails *prometheus.Desc
+	browserPageCrashes *prometheus.Desc
 
 	// Browser metrics, exported only when counters.Browser is set
 	// (mode: playwright).
@@ -59,6 +71,17 @@ func NewPrometheusCollector(c *Counters, latencies *LatencyRecorder) *Prometheus
 		latencyP95:         prometheus.NewDesc("serp_harvester_latency_p95_ms", "Approximate p95 fetch latency in milliseconds over the current sample window.", nil, nil),
 		latencyP99:         prometheus.NewDesc("serp_harvester_latency_p99_ms", "Approximate p99 fetch latency in milliseconds over the current sample window.", nil, nil),
 
+		fetchOutcomes:      prometheus.NewDesc("serp_harvester_fetch_outcomes_total", "Fetch attempts by outcome (success, rate_limited, captcha, consent, interstitial, timeout, transport, http_4xx, http_5xx, canceled, other).", []string{"outcome"}, nil),
+		proxyCooldowns:     prometheus.NewDesc("serp_harvester_proxy_cooldowns_total", "Proxies entering cooldown, by reason (failures, blocked, rate_limited).", []string{"reason"}, nil),
+		rateDecreases:      prometheus.NewDesc("serp_harvester_ratelimit_decreases_total", "Adaptive per-proxy rate decreases after a rate limit or block.", nil, nil),
+		failovers:          prometheus.NewDesc("serp_harvester_fetch_failovers_total", "Fetches retried on the fallback fetcher (mode: hybrid).", nil, nil),
+		httpConsent:        prometheus.NewDesc("serp_harvester_http_consent_handled_total", "Consent pages dismissed by the HTTP fetcher's reject-all form submission.", nil, nil),
+		proxiesAvailable:   prometheus.NewDesc("serp_harvester_proxies_available", "Proxies not currently in cooldown.", nil, nil),
+		proxiesCooling:     prometheus.NewDesc("serp_harvester_proxies_cooling", "Proxies currently in cooldown.", nil, nil),
+		proxiesThrottled:   prometheus.NewDesc("serp_harvester_proxies_throttled", "Proxies whose adaptive request rate is below the configured rate.", nil, nil),
+		browserLaunchFails: prometheus.NewDesc("serp_harvester_browser_launch_failures_total", "Failed Chromium launches (each starts a launch backoff).", nil, nil),
+		browserPageCrashes: prometheus.NewDesc("serp_harvester_browser_page_crashes_total", "Browser page (renderer) crashes.", nil, nil),
+
 		browserLaunches:       prometheus.NewDesc("serp_harvester_browser_launches_total", "Total Chromium launches, including relaunches after a crash or disconnect.", nil, nil),
 		browserDisconnects:    prometheus.NewDesc("serp_harvester_browser_disconnects_total", "Total unexpected browser disconnects (crash, OOM kill); excludes shutdown.", nil, nil),
 		browserNavTimeouts:    prometheus.NewDesc("serp_harvester_browser_navigation_timeouts_total", "Total browser navigations that exceeded request_timeout.", nil, nil),
@@ -83,7 +106,19 @@ func (p *PrometheusCollector) Describe(ch chan<- *prometheus.Desc) {
 		ch <- p.latencyP95
 		ch <- p.latencyP99
 	}
+	ch <- p.fetchOutcomes
+	ch <- p.proxyCooldowns
+	ch <- p.rateDecreases
+	ch <- p.failovers
+	ch <- p.httpConsent
+	if p.counters.ProxyGauges != nil {
+		ch <- p.proxiesAvailable
+		ch <- p.proxiesCooling
+		ch <- p.proxiesThrottled
+	}
 	if p.counters.Browser != nil {
+		ch <- p.browserLaunchFails
+		ch <- p.browserPageCrashes
 		ch <- p.browserLaunches
 		ch <- p.browserDisconnects
 		ch <- p.browserNavTimeouts
@@ -112,8 +147,26 @@ func (p *PrometheusCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(p.latencyP99, prometheus.GaugeValue, float64(ls.P99.Milliseconds()))
 	}
 
+	for _, v := range p.counters.Outcomes() {
+		ch <- prometheus.MustNewConstMetric(p.fetchOutcomes, prometheus.CounterValue, float64(v.Value), v.Label)
+	}
+	for _, v := range p.counters.Cooldowns() {
+		ch <- prometheus.MustNewConstMetric(p.proxyCooldowns, prometheus.CounterValue, float64(v.Value), v.Label)
+	}
+	ch <- prometheus.MustNewConstMetric(p.rateDecreases, prometheus.CounterValue, float64(atomic.LoadUint64(&p.counters.RateDecreases)))
+	ch <- prometheus.MustNewConstMetric(p.failovers, prometheus.CounterValue, float64(atomic.LoadUint64(&p.counters.Failovers)))
+	ch <- prometheus.MustNewConstMetric(p.httpConsent, prometheus.CounterValue, float64(atomic.LoadUint64(&p.counters.HTTPConsentHandled)))
+	if p.counters.ProxyGauges != nil {
+		g := p.counters.ProxyGauges()
+		ch <- prometheus.MustNewConstMetric(p.proxiesAvailable, prometheus.GaugeValue, float64(g.Available))
+		ch <- prometheus.MustNewConstMetric(p.proxiesCooling, prometheus.GaugeValue, float64(g.Cooling))
+		ch <- prometheus.MustNewConstMetric(p.proxiesThrottled, prometheus.GaugeValue, float64(g.Throttled))
+	}
+
 	if p.counters.Browser != nil {
 		b := p.counters.Browser.Snapshot()
+		ch <- prometheus.MustNewConstMetric(p.browserLaunchFails, prometheus.CounterValue, float64(b.LaunchFailures))
+		ch <- prometheus.MustNewConstMetric(p.browserPageCrashes, prometheus.CounterValue, float64(b.PageCrashes))
 		ch <- prometheus.MustNewConstMetric(p.browserLaunches, prometheus.CounterValue, float64(b.Launches))
 		ch <- prometheus.MustNewConstMetric(p.browserDisconnects, prometheus.CounterValue, float64(b.Disconnects))
 		ch <- prometheus.MustNewConstMetric(p.browserNavTimeouts, prometheus.CounterValue, float64(b.NavigationTimeouts))

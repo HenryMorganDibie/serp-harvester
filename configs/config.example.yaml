@@ -11,6 +11,9 @@
 # "playwright" renders live_endpoint in headless Chromium and parses the
 # rendered HTML; it also requires -i-have-reviewed-tos and an installed
 # Chromium (`make playwright-install`). See README.md "Browser mode".
+# "hybrid" is live first, falling back to the browser only for pages that
+# need JavaScript or a consent wall HTTP couldn't dismiss (never for
+# CAPTCHAs). See README.md "Acquisition resilience".
 mode: mock
 
 queries:
@@ -51,16 +54,28 @@ max_retries: 2
 
 rate_per_proxy_rps: 1
 rate_burst: 1
+# Adaptive per-proxy throttling: a rate limit or block halves that proxy's
+# rate (down to rate_min_rps, default rate_per_proxy_rps/10); successes
+# recover it gradually. Default true.
+adaptive_rate: true
+rate_min_rps: 0
 
 # Leave empty to run direct (no proxy). In production this list would be
 # populated from a proxy provider and typically hot-reloaded, not hardcoded
 # (see proxy.Pool.Reload for the runtime-reconfiguration seam).
 proxies: []
+# A proxy cools down after proxy_ban_fails failures in a row, immediately on
+# a CAPTCHA / block page, and for exactly Retry-After on a 429. Repeat
+# cooldowns double, up to proxy_ban_cooldown_max; a success resets that.
 proxy_ban_fails: 3
 proxy_ban_cooldown: 30s
+proxy_ban_cooldown_max: 10m
 # round_robin (default), random, or weighted_success_rate (biases toward
-# proxies with a better observed success rate once the pool has history).
+# proxies with better recent health once the pool has history).
 proxy_strategy: round_robin
+# When every proxy is cooling, a job waits up to this long for one to
+# recover before that attempt fails.
+max_proxy_wait: 2m
 
 live_endpoint: "https://www.google.com/search"
 request_timeout: 10s # for mode: playwright, ~30s: it covers page load, the consent step and browser_wait_selector

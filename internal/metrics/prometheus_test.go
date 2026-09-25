@@ -161,3 +161,62 @@ func TestBrowserCounters_NilSafe(t *testing.T) {
 		t.Errorf("nil snapshot = %+v, want zero", s)
 	}
 }
+
+func TestServeHTTP_AcquisitionMetrics(t *testing.T) {
+	c := &Counters{}
+	c.IncOutcome("success")
+	c.IncOutcome("success")
+	c.IncOutcome("captcha")
+	c.IncProxyCooldown("blocked")
+	c.IncRateDecrease()
+	c.IncFailover()
+	c.IncHTTPConsentHandled()
+
+	srv := httptest.NewServer(ServeHTTP(c, nil))
+	defer srv.Close()
+	resp, err := srv.Client().Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	text := string(body)
+
+	for _, want := range []string{
+		`serp_harvester_fetch_outcomes_total{outcome="success"} 2`,
+		`serp_harvester_fetch_outcomes_total{outcome="captcha"} 1`,
+		`serp_harvester_proxy_cooldowns_total{reason="blocked"} 1`,
+		"serp_harvester_ratelimit_decreases_total 1",
+		"serp_harvester_fetch_failovers_total 1",
+		"serp_harvester_http_consent_handled_total 1",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("expected %q in:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "serp_harvester_proxies_available") {
+		t.Error("proxy gauges should be absent when ProxyGauges is unset")
+	}
+
+	c.ProxyGauges = func() ProxyGauges { return ProxyGauges{Available: 3, Cooling: 2, Throttled: 1} }
+	c.Browser = &BrowserCounters{}
+	c.Browser.IncLaunchFailures()
+	c.Browser.IncPageCrashes()
+	resp2, err := srv.Client().Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	body2, _ := io.ReadAll(resp2.Body)
+	for _, want := range []string{
+		"serp_harvester_proxies_available 3",
+		"serp_harvester_proxies_cooling 2",
+		"serp_harvester_proxies_throttled 1",
+		"serp_harvester_browser_launch_failures_total 1",
+		"serp_harvester_browser_page_crashes_total 1",
+	} {
+		if !strings.Contains(string(body2), want) {
+			t.Errorf("expected %q in:\n%s", want, body2)
+		}
+	}
+}

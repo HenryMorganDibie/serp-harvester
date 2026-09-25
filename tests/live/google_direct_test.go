@@ -13,10 +13,11 @@ import (
 // HTTP fetch against Google does not currently return usable organic
 // results — see README "Live mode" for what was found (a consent
 // interstitial on some attempts, a JS-execution check on others). This test
-// passes when the pipeline correctly detects and flags that outcome
-// (calibration), and deliberately calls out — via t.Log, not a failure — the
-// case where Google unexpectedly returns real results, since that would
-// mean the documented finding is stale and README needs revisiting.
+// passes when the pipeline correctly detects and flags that outcome (a
+// classified block, or calibration if a page slips past classification),
+// and deliberately calls out — via t.Log, not a failure — the case where
+// Google unexpectedly returns real results, since that would mean the
+// documented finding is stale and README needs revisiting.
 //
 // Run explicitly: HARVESTER_LIVE=true go test ./tests/live/... -run GoogleDirect -v
 func TestGoogleDirect_CurrentlyBlocked(t *testing.T) {
@@ -28,8 +29,15 @@ func TestGoogleDirect_CurrentlyBlocked(t *testing.T) {
 	}
 
 	resp, err := f.Fetch(context.Background(), fetcher.Request{Query: "golang worker pool pattern"})
-	if err != nil {
+	switch outcome := fetcher.Classify(err); {
+	case err == nil:
+	case outcome == fetcher.OutcomeTransport || outcome == fetcher.OutcomeTimeout || outcome == fetcher.OutcomeOther:
 		t.Fatalf("unexpected network error reaching Google: %v", err)
+	default:
+		// Consent wall, JS check, CAPTCHA or rate limit: detected and
+		// classified, which is the documented current state.
+		t.Logf("confirmed current state: direct-to-Google fetch classified as %s (%v)", outcome, err)
+		return
 	}
 	t.Logf("status=%d bytes=%d", resp.StatusCode, len(resp.Body))
 

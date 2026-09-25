@@ -2,10 +2,15 @@
 # worker image (Dockerfile) since they're independently scaled: typically
 # one or a few api replicas behind a load balancer, vs. many harvester
 # replicas consuming the queue.
+# EXTRA_CA: optional CA bundle for building behind a TLS-inspecting proxy
+# (BuildKit secret "extra_ca", see deploy/README.md). Unused when absent;
+# never stored in the image.
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=secret,id=extra_ca,required=false \
+    if [ -s /run/secrets/extra_ca ]; then export SSL_CERT_FILE=/run/secrets/extra_ca; fi; \
+    go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/api ./cmd/api
 

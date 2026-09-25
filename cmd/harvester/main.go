@@ -37,9 +37,9 @@ import (
 
 func main() {
 	configPath := flag.String("config", "configs/config.example.yaml", "path to YAML config")
-	mode := flag.String("mode", "", "override config mode: mock|live|provider|playwright")
+	mode := flag.String("mode", "", "override config mode: mock|live|provider|playwright|hybrid")
 	queriesFlag := flag.String("queries", "", "comma-separated queries, overrides config")
-	iAcceptLiveRisk := flag.Bool("i-have-reviewed-tos", false, "required to run --mode live or --mode playwright")
+	iAcceptLiveRisk := flag.Bool("i-have-reviewed-tos", false, "required to run --mode live, playwright or hybrid")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -57,7 +57,7 @@ func main() {
 	}
 
 	counters := &metrics.Counters{}
-	if cfg.Mode == "playwright" {
+	if cfg.Mode == "playwright" || cfg.Mode == "hybrid" {
 		counters.Browser = &metrics.BrowserCounters{}
 	}
 	latencies := metrics.NewLatencyRecorder(10000)
@@ -76,7 +76,15 @@ func main() {
 
 	proxyPool := proxy.NewPool(cfg.Proxies, cfg.ProxyBanFails, cfg.ProxyBanCooldown)
 	proxyPool.Strategy = parseProxyStrategy(cfg.ProxyStrategy)
+	proxyPool.MaxCooldown = cfg.ProxyBanCooldownMax
 	limiter := ratelimit.New(cfg.RatePerProxyRPS, cfg.RateBurst)
+	if cfg.AdaptiveRate {
+		limiter = ratelimit.NewAdaptive(cfg.RatePerProxyRPS, cfg.RateBurst, cfg.RateMinRPS)
+	}
+	counters.ProxyGauges = func() metrics.ProxyGauges {
+		available, cooling := proxyPool.Counts()
+		return metrics.ProxyGauges{Available: available, Cooling: cooling, Throttled: limiter.Throttled()}
+	}
 
 	pool := &worker.Pool{
 		Concurrency: cfg.Concurrency,
@@ -88,6 +96,8 @@ func main() {
 		Sink:        sink,
 		Metrics:     counters,
 		Latencies:   latencies,
+
+		MaxProxyWait: cfg.MaxProxyWait,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -138,11 +148,7 @@ func buildFetcherAndParser(cfg config.Config, iAcceptLiveRisk *bool, counters *m
 			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stderr, liveModeBanner(cfg))
-		f, err := fetcher.NewHTTPFetcher(cfg.LiveEndpoint, cfg.RequestTimeout)
-		if err != nil {
-			log.Fatalf("build http fetcher: %v", err)
-		}
-		return f, parser.New()
+		return newHTTPFetcher(cfg, counters), parser.New()
 
 	case "provider":
 		if cfg.ProviderBaseURL == "" {
@@ -155,13 +161,13 @@ func buildFetcherAndParser(cfg config.Config, iAcceptLiveRisk *bool, counters *m
 		f := fetcher.NewProviderFetcher(cfg.ProviderBaseURL, apiKey, cfg.ProviderEngine, cfg.RequestTimeout)
 		return f, parser.NewJSON()
 
-	case "playwright":
+	case "playwright", "hybrid":
 		if !*iAcceptLiveRisk {
 			fmt.Fprintln(os.Stderr, liveModeWarning)
 			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stderr, liveModeBanner(cfg))
-		f, err := fetcher.NewPlaywrightFetcher(fetcher.PlaywrightConfig{
+		browser, err := fetcher.NewPlaywrightFetcher(fetcher.PlaywrightConfig{
 			Endpoint:       cfg.LiveEndpoint,
 			Timeout:        cfg.RequestTimeout,
 			PoolSize:       cfg.BrowserPoolSize,
@@ -174,12 +180,29 @@ func buildFetcherAndParser(cfg config.Config, iAcceptLiveRisk *bool, counters *m
 		if err != nil {
 			log.Fatalf("build playwright fetcher: %v (install the driver and Chromium with `make playwright-install` / scripts/install-playwright.sh)", err)
 		}
-		return f, parser.New()
+		if cfg.Mode == "playwright" {
+			return browser, parser.New()
+		}
+		return &fetcher.FailoverFetcher{
+			Primary:    newHTTPFetcher(cfg, counters),
+			Secondary:  browser,
+			OnFailover: func(fetcher.Outcome) { counters.IncFailover() },
+		}, parser.New()
 
 	default:
-		log.Fatalf("unknown mode %q (want mock|live|provider|playwright)", cfg.Mode)
+		log.Fatalf("unknown mode %q (want mock|live|provider|playwright|hybrid)", cfg.Mode)
 		return nil, nil // unreachable
 	}
+}
+
+// newHTTPFetcher builds the plain HTTP fetcher used by live and hybrid mode.
+func newHTTPFetcher(cfg config.Config, counters *metrics.Counters) *fetcher.HTTPFetcher {
+	f, err := fetcher.NewHTTPFetcher(cfg.LiveEndpoint, cfg.RequestTimeout)
+	if err != nil {
+		log.Fatalf("build http fetcher: %v", err)
+	}
+	f.OnConsentHandled = counters.IncHTTPConsentHandled
+	return f
 }
 
 // buildSink picks the result sink: JSON-Lines (to OutputPath, default
@@ -265,11 +288,11 @@ func parseProxyStrategy(s string) proxy.Strategy {
 	}
 }
 
-const liveModeWarning = `refusing to run --mode live or --mode playwright without -i-have-reviewed-tos
+const liveModeWarning = `refusing to run --mode live, playwright or hybrid without -i-have-reviewed-tos
 
-Live and playwright modes send real requests to the configured endpoint
-(default: Google Search), playwright through a headless browser. Before
-running either you should have reviewed:
+These modes send real requests to the configured endpoint (default: Google
+Search), playwright and hybrid through a headless browser. Before running
+any of them you should have reviewed:
   - The target site's Terms of Service and robots.txt
   - Applicable law in your and the target's jurisdiction
   - Your own risk tolerance for IP blocks / CAPTCHAs at the configured rate

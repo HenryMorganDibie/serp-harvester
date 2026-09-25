@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<!--
+  Synthetic "unusual traffic" page for the Playwright fetcher tests. The
+  fetcher must classify it as a CAPTCHA block and return an error, never
+  interact with it.
+-->
+<html>
+<head><meta charset="utf-8"><title>Sorry...</title></head>
+<body>
+  <p>Our systems have detected unusual traffic from your computer network.</p>
+  <form id="captcha-form" action="/sorry/index" method="POST">
+    <div class="g-recaptcha" data-sitekey="fixture"></div>
+    <input type="submit" value="Submit">
+  </form>
+</body>
+</html>

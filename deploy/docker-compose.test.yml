@@ -1,0 +1,64 @@
+# Test overlay for deploy/docker-compose.yml: reproducible integration and
+# end-to-end runs in Docker. Use it through scripts/compose-test.sh (or
+# `make integration` / `make e2e`), which set a separate project name and
+# throwaway passwords. Docker is a convenience for these runs only; the
+# same tests run against any Redis/PostgreSQL/Chromium (see
+# tests/integration).
+#
+# Profiles:
+#   test  - `integration`: go test ./... against this stack's Redis and
+#           PostgreSQL with Chromium, including the gated browser, store and
+#           pipeline tests.
+#   e2e   - `fixture` plus the real harvester-playwright image pointed at the
+#           fixture site (never a real search engine) through three scripted
+#           proxies, fed from Redis and writing to PostgreSQL.
+services:
+  redis:
+    ports: !reset [] # don't collide with a stack already running on the host
+
+  postgres:
+    ports: !reset []
+
+  integration:
+    profiles: ["test"]
+    build: &testbuild
+      context: ..
+      dockerfile: deploy/test.Dockerfile
+      secrets: [extra_ca]
+    image: serp-harvester-test
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      INTEGRATION: "1"
+      REDIS_ADDR: "redis:6379"
+      POSTGRES_TEST_DSN: "postgres://harvester@postgres:5432/serp_harvester?sslmode=disable"
+      PGPASSWORD: "${POSTGRES_PASSWORD:?}"
+    shm_size: "1gb"
+    init: true
+
+  fixture:
+    profiles: ["e2e"]
+    build: *testbuild
+    image: serp-harvester-test
+    command: ["fixtureserver"]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /healthz HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q ok <&3"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  harvester-playwright:
+    profiles: ["playwright", "e2e"]
+    depends_on:
+      fixture:
+        condition: service_healthy
+    volumes:
+      - ./test/config.e2e.yaml:/app/config.yaml:ro
+    command:
+      - "-config=/app/config.yaml"
+      # The e2e config only targets the fixture site, never a real search
+      # engine, so the ToS gate is satisfied here.
+      - "-i-have-reviewed-tos=true"

@@ -29,6 +29,11 @@ type BrowserCounters struct {
 	BlockedConsent      uint64
 	BlockedInterstitial uint64
 
+	// LaunchFailures counts failed Chromium launches (each one starts a
+	// launch backoff). PageCrashes counts renderer crashes of a page.
+	LaunchFailures uint64
+	PageCrashes    uint64
+
 	// SessionsOpen and SessionsInUse are gauges: browser sessions (one
 	// context + page each) currently open, and currently serving a fetch.
 	SessionsOpen  int64
@@ -46,6 +51,20 @@ func (b *BrowserCounters) IncLaunches() {
 func (b *BrowserCounters) IncDisconnects() {
 	if b != nil {
 		atomic.AddUint64(&b.Disconnects, 1)
+	}
+}
+
+// IncLaunchFailures records one failed browser launch.
+func (b *BrowserCounters) IncLaunchFailures() {
+	if b != nil {
+		atomic.AddUint64(&b.LaunchFailures, 1)
+	}
+}
+
+// IncPageCrashes records one page (renderer) crash.
+func (b *BrowserCounters) IncPageCrashes() {
+	if b != nil {
+		atomic.AddUint64(&b.PageCrashes, 1)
 	}
 }
 
@@ -97,6 +116,7 @@ func (b *BrowserCounters) AddSessionsInUse(delta int64) {
 type BrowserSnapshot struct {
 	Launches, Disconnects, NavigationTimeouts, ConsentHandled uint64
 	BlockedCaptcha, BlockedConsent, BlockedInterstitial       uint64
+	LaunchFailures, PageCrashes                               uint64
 	SessionsOpen, SessionsInUse                               int64
 }
 
@@ -113,6 +133,8 @@ func (b *BrowserCounters) Snapshot() BrowserSnapshot {
 		BlockedCaptcha:      atomic.LoadUint64(&b.BlockedCaptcha),
 		BlockedConsent:      atomic.LoadUint64(&b.BlockedConsent),
 		BlockedInterstitial: atomic.LoadUint64(&b.BlockedInterstitial),
+		LaunchFailures:      atomic.LoadUint64(&b.LaunchFailures),
+		PageCrashes:         atomic.LoadUint64(&b.PageCrashes),
 		SessionsOpen:        atomic.LoadInt64(&b.SessionsOpen),
 		SessionsInUse:       atomic.LoadInt64(&b.SessionsInUse),
 	}

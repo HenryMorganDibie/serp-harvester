@@ -1,6 +1,9 @@
 // Package proxy provides a rotating pool of egress identities with health
 // tracking: a proxy that fails repeatedly is put in cooldown instead of
 // being hammered, and comes back into rotation once the cooldown expires.
+// Outcomes are weighted (ReportOutcome): a block page cools a proxy at
+// once, a rate limit cools it for exactly the server's Retry-After, and
+// repeat offenders get exponentially longer cooldowns up to MaxCooldown.
 // Success/failure counts are tracked per proxy so rotation can be weighted
 // toward healthier proxies, and the pool can be reconfigured at runtime
 // (Reload) without dropping accumulated health stats for proxies that stay
@@ -44,6 +47,31 @@ const (
 	WeightedSuccessRate
 )
 
+// Outcome is what a request through a proxy tells the pool about that
+// proxy's health.
+type Outcome int
+
+const (
+	// Success resets the failure streak and the cooldown escalation.
+	Success Outcome = iota
+	// Failure (timeout, connect error, 5xx) counts toward the ban
+	// threshold.
+	Failure
+	// Blocked (CAPTCHA, "unusual traffic", JS-check page) puts the proxy in
+	// cooldown immediately, escalating on repeats.
+	Blocked
+	// RateLimited (HTTP 429) cools the proxy for the server's Retry-After
+	// if given, otherwise like Blocked.
+	RateLimited
+	// Neutral outcomes (client errors, consent walls, cancellation) say
+	// nothing about the proxy and change nothing.
+	Neutral
+)
+
+// healthAlpha weights the most recent outcome in a proxy's health score
+// (an exponentially weighted moving average of success).
+const healthAlpha = 0.2
+
 // Proxy is one egress identity (e.g. a proxy URL). Key() is what the rate
 // limiter and metrics key off of.
 type Proxy struct {
@@ -55,6 +83,12 @@ type Proxy struct {
 	totalSuccess     uint64
 	totalFailure     uint64
 	lastUsedAt       time.Time
+
+	// banStreak counts cooldowns since the last success; each one doubles
+	// the next cooldown. health is the success EWMA (valid when hasHealth).
+	banStreak int
+	health    float64
+	hasHealth bool
 }
 
 // Key returns a stable identifier for this proxy, or "direct" when no proxy
@@ -81,6 +115,11 @@ type Stats struct {
 	Banned           bool
 	BannedUntil      time.Time
 	LastUsedAt       time.Time
+	// BanStreak is the number of cooldowns since the last success.
+	BanStreak int
+	// Health is the recent-success score in [0,1] (EWMA), or -1 with no
+	// history yet.
+	Health float64
 }
 
 // SuccessRate returns TotalSuccess / (TotalSuccess + TotalFailure), or 0 if
@@ -105,7 +144,28 @@ func (p *Proxy) Stats() Stats {
 		Banned:           time.Now().Before(p.bannedUntil),
 		BannedUntil:      p.bannedUntil,
 		LastUsedAt:       p.lastUsedAt,
+		BanStreak:        p.banStreak,
+		Health:           p.healthLocked(),
 	}
+}
+
+func (p *Proxy) healthLocked() float64 {
+	if !p.hasHealth {
+		return -1
+	}
+	return p.health
+}
+
+func (p *Proxy) recordHealthLocked(ok bool) {
+	v := 0.0
+	if ok {
+		v = 1
+	}
+	if !p.hasHealth {
+		p.health, p.hasHealth = v, true
+		return
+	}
+	p.health = (1-healthAlpha)*p.health + healthAlpha*v
 }
 
 // Pool hands out proxies according to Strategy, skipping any currently
@@ -121,6 +181,10 @@ type Pool struct {
 	// Strategy selects the rotation policy; zero-value is RoundRobin, so
 	// existing callers that don't set it get unchanged behavior.
 	Strategy Strategy
+
+	// MaxCooldown caps escalating cooldowns (banCooldown doubles per
+	// consecutive cooldown without a success). Zero means 16x banCooldown.
+	MaxCooldown time.Duration
 }
 
 // NewPool builds a pool from a list of proxy URLs. An empty list is valid
@@ -233,15 +297,16 @@ func (pl *Pool) nextWeightedLocked() (*Proxy, error) {
 		return nil, ErrAllBanned
 	}
 
-	// Weight = success rate, with a floor so a proxy with zero history (or
-	// zero rate) still gets picked sometimes rather than being starved.
+	// Weight = recent health (success EWMA, so a proxy that has started
+	// failing loses weight quickly even with a long good history), with a
+	// floor so a proxy with zero history (or zero health) still gets
+	// picked sometimes rather than being starved.
 	const floor = 0.1
 	weights := make([]float64, len(healthy))
 	total := 0.0
 	for i, p := range healthy {
-		s := p.Stats()
-		w := s.SuccessRate()
-		if s.TotalSuccess+s.TotalFailure == 0 {
+		w := p.Stats().Health
+		if w < 0 {
 			w = 0.5 // no history: treat as average until proven otherwise
 		}
 		if w < floor {
@@ -270,28 +335,124 @@ func (pl *Pool) markUsed(p *Proxy) {
 	p.mu.Unlock()
 }
 
-// ReportResult records whether the last request through p succeeded,
-// updating its success/failure counts and banning it for banCooldown once
-// it has failed banThreshold times in a row. It returns true exactly when
-// this call is what pushed p into a new ban (not on every failure while
-// already banned, and not on repeat calls before the threshold is reached),
-// so callers can count ban *events* rather than every failure.
+// ReportResult records whether the last request through p succeeded: a nil
+// err is Success, anything else a Failure. See ReportOutcome.
 func (pl *Pool) ReportResult(p *Proxy, err error) bool {
+	if err == nil {
+		return pl.ReportOutcome(p, Success, 0)
+	}
+	return pl.ReportOutcome(p, Failure, 0)
+}
+
+// ReportOutcome records the outcome of the last request through p and
+// returns true exactly when this call put p into a new cooldown, so callers
+// can count cooldown events rather than every failure. retryAfter is the
+// server's Retry-After for RateLimited (zero if none).
+//
+// Failures ban after banThreshold in a row; Blocked, and RateLimited
+// without a Retry-After, cool down immediately. Those cooldowns escalate:
+// banCooldown doubles for each cooldown since the last success, up to
+// MaxCooldown. RateLimited with a Retry-After cools for exactly that long
+// and does not escalate.
+func (pl *Pool) ReportOutcome(p *Proxy, outcome Outcome, retryAfter time.Duration) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if err == nil {
+	switch outcome {
+	case Success:
 		p.consecutiveFails = 0
+		p.banStreak = 0
 		p.totalSuccess++
+		p.recordHealthLocked(true)
+		return false
+	case Neutral:
 		return false
 	}
-	p.consecutiveFails++
+
 	p.totalFailure++
-	if p.consecutiveFails == pl.banThreshold {
-		p.bannedUntil = time.Now().Add(pl.banCooldown)
-		return true
+	p.recordHealthLocked(false)
+	switch outcome {
+	case RateLimited:
+		if retryAfter > 0 {
+			return pl.coolLocked(p, retryAfter)
+		}
+		return pl.coolLocked(p, pl.escalatedCooldownLocked(p))
+	case Blocked:
+		return pl.coolLocked(p, pl.escalatedCooldownLocked(p))
+	default: // Failure
+		p.consecutiveFails++
+		if pl.banThreshold > 0 && p.consecutiveFails >= pl.banThreshold {
+			return pl.coolLocked(p, pl.escalatedCooldownLocked(p))
+		}
+		return false
 	}
-	return false
+}
+
+// escalatedCooldownLocked returns banCooldown doubled per cooldown since
+// the last success, capped at MaxCooldown, and advances the streak.
+func (pl *Pool) escalatedCooldownLocked(p *Proxy) time.Duration {
+	max := pl.MaxCooldown
+	if max <= 0 {
+		max = 16 * pl.banCooldown
+	}
+	d := pl.banCooldown
+	for i := 0; i < p.banStreak && d < max; i++ {
+		d *= 2
+	}
+	if d > max {
+		d = max
+	}
+	p.banStreak++
+	return d
+}
+
+// coolLocked puts p in cooldown for d (never shortening an existing one)
+// and resets the failure count, so a proxy that keeps failing after its
+// cooldown is banned again rather than never. Returns true if p was not
+// already cooling.
+func (pl *Pool) coolLocked(p *Proxy, d time.Duration) bool {
+	now := time.Now()
+	wasCooling := now.Before(p.bannedUntil)
+	if until := now.Add(d); until.After(p.bannedUntil) {
+		p.bannedUntil = until
+	}
+	p.consecutiveFails = 0
+	return !wasCooling
+}
+
+// NextAvailableAt returns when the soonest cooling proxy becomes usable
+// again, or the zero time if a proxy is available now.
+func (pl *Pool) NextAvailableAt() time.Time {
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
+	var earliest time.Time
+	now := time.Now()
+	for _, p := range pl.proxies {
+		p.mu.Lock()
+		until := p.bannedUntil
+		p.mu.Unlock()
+		if !now.Before(until) {
+			return time.Time{}
+		}
+		if earliest.IsZero() || until.Before(earliest) {
+			earliest = until
+		}
+	}
+	return earliest
+}
+
+// Counts returns how many proxies are available and how many are cooling.
+func (pl *Pool) Counts() (available, cooling int) {
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
+	for _, p := range pl.proxies {
+		if p.isBanned() {
+			cooling++
+		} else {
+			available++
+		}
+	}
+	return available, cooling
 }
 
 // Size returns how many proxies are configured (at least 1).

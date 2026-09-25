@@ -82,6 +82,24 @@ groups:
           summary: "Chromium disconnected more than twice in 15m"
           description: "Usually memory pressure or /dev/shm exhaustion. See RUNBOOK.md 'Playwright mode'."
 
+      - alert: ProxyPoolExhausted
+        expr: serp_harvester_proxies_available == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Every proxy has been in cooldown for 5m"
+          description: "Jobs are waiting on cooldowns (up to max_proxy_wait) and then dropping. See RUNBOOK.md 'All proxies cooling'."
+
+      - alert: TargetPushingBack
+        expr: sum(increase(serp_harvester_fetch_outcomes_total{outcome=~"rate_limited|captcha|interstitial"}[15m])) > 10
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 10 rate-limited or blocked fetches in 15m"
+          description: "The target is pushing back on this egress; adaptive throttling is already slowing the affected proxies. See RUNBOOK.md 'All proxies cooling'."
+
       - alert: MetricsEndpointDown
         expr: up{job="serp-harvester"} == 0
         for: 2m

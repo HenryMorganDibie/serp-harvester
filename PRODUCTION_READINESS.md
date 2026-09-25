@@ -37,7 +37,13 @@ for the operational side of this.
 ## 5. Retry semantics
 
 Configurable `max_retries` with exponential backoff and jitter
-(`internal/worker/pool.go`'s `backoff`). A job that exhausts retries, or is
+(`internal/worker/pool.go`). Every fetch result is classified
+(`fetcher.Classify`): a rate limit or block page retries at once on another
+proxy (that one is now cooling), a 4xx ends the job without retrying, and
+when every proxy is cooling the job waits for the soonest to recover (up to
+`max_proxy_wait`). All waits end immediately on shutdown. See
+[README "Acquisition resilience"](README.md#acquisition-resilience). A job
+that exhausts retries, or is
 still in flight when the run shuts down, is counted as dropped
 (`serp_harvester_dropped_total`), never silently unaccounted for —
 success+dropped is a complete count of every job actually attempted. This
@@ -48,9 +54,14 @@ test coverage was actually built.
 
 ## 6. Proxy management
 
-Health-tracked pool (`internal/proxy`): per-proxy success/failure counts,
-failure-threshold cooldown, and a choice of three rotation strategies
-(round-robin, random, weighted-by-success-rate). `Pool.Reload(urls)`
+Health-tracked pool (`internal/proxy`): per-proxy success/failure counts, a
+recent-health score, and outcome-weighted cooldowns: consecutive failures
+past a threshold, a block page at once, a 429 for exactly its `Retry-After`,
+with repeat cooldowns doubling up to `proxy_ban_cooldown_max`. Consent walls
+and 4xx don't count against a proxy. Three rotation strategies (round-robin,
+random, weighted by recent health). A bug where a proxy was never re-banned
+after its first cooldown was found and fixed with a regression test
+(`TestPool_RebansAfterCooldownExpires`). `Pool.Reload(urls)`
 reconfigures the proxy list at runtime without dropping accumulated health
 stats for URLs that stay — the seam for pointing at a vendor's proxy-list
 API instead of static config. Authenticated proxies
@@ -58,7 +69,9 @@ API instead of static config. Authenticated proxies
 an integration test that checks the header actually arrives at a fake proxy
 server, not just that Go's docs say it should
 (`TestHTTPFetcher_AuthenticatedProxy`). `serp_harvester_proxy_banned_total`
-tracks ban events for alerting. What's not included: automatically sourcing
+tracks cooldown events (by reason in `serp_harvester_proxy_cooldowns_total`),
+and `serp_harvester_proxies_available`/`_cooling` feed the
+`ProxyPoolExhausted` alert. What's not included: automatically sourcing
 proxies from a vendor's API — `Reload` is the integration point, but nothing
 calls it on a schedule yet.
 
@@ -69,7 +82,12 @@ Two layers: a per-key (per-proxy, or per-direct-egress-IP) token bucket
 rate-limit handling for the provider fetch path — a 429 is parsed into a
 `*fetcher.RateLimitError` carrying the provider's own `Retry-After` value,
 and the worker pool waits that exact duration before retrying instead of
-guessing with generic backoff (`TestPool_HonorsRateLimitRetryAfter`).
+guessing with generic backoff (`TestPool_HonorsRateLimitRetryAfter`). The
+same applies to the HTTP and browser fetchers. With `adaptive_rate` (default
+on), the per-proxy bucket also adapts: a rate limit or block halves that
+proxy's rate down to `rate_min_rps`, and successes recover it gradually
+(`internal/ratelimit`, AIMD). A rate-limited proxy is cooled for its
+`Retry-After`, so work moves to other proxies instead of waiting.
 
 ## 8. Google response handling
 
@@ -90,6 +108,14 @@ Google, so its real block rate is unknown; it is an acquisition option, not
 a production-ready direct-to-Google path. See
 [README "Browser mode"](README.md#browser-mode-playwright).
 
+The plain HTTP fetcher now reports the same outcomes (429 with
+`Retry-After`, CAPTCHA, JS-check shell, consent wall, 4xx/5xx) instead of
+passing block pages to the parser, and dismisses consent pages by
+submitting their "reject all" form. `mode: hybrid` uses HTTP first and the
+browser only for JS-check pages and undismissed consent walls. All of this
+is verified end to end against a fictional site and scripted proxies
+(`tests/integration`, `make e2e`), not against live Google.
+
 ## 9. AI Overview extraction
 
 Handled on both fetch paths differently: the HTML parser looks for an
@@ -106,15 +132,19 @@ hit rate, parser drift rate, proxy ban rate, latency p50/p95/p99) plus a
 `/healthz` liveness endpoint. `mode: playwright` adds browser metrics
 (launches, unexpected disconnects, navigation timeouts, consent pages
 handled, blocked pages by reason, open/in-use sessions) and two alert rules
-(`BrowserBlockedPagesHigh`, `BrowserDisconnectsHigh`); the Grafana
-dashboard does not chart them yet. Pre-built Grafana dashboard in
+(`BrowserBlockedPagesHigh`, `BrowserDisconnectsHigh`). Every mode reports
+fetch outcomes by type, proxy cooldowns by reason, proxy availability and
+throttling gauges, adaptive rate decreases and hybrid failovers, with
+`ProxyPoolExhausted` and `TargetPushingBack` alerts. The Grafana dashboard
+does not chart the newer metrics yet. Pre-built Grafana dashboard in
 `deploy/grafana/provisioning/`. See
 [README "Observability"](README.md#observability-prometheus-metrics).
 
 ## 11. Failure recovery
 
-Per-job retry with backoff; proxy cooldown and automatic recovery after
-`proxy_ban_cooldown`; a failed AI Overview follow-up degrades to "no AI
+Per-job retry with backoff and failover to another proxy; proxy cooldown
+and automatic recovery after an escalating cooldown; in browser modes,
+Chromium relaunch with launch backoff, and replacement of crashed pages; a failed AI Overview follow-up degrades to "no AI
 Overview" rather than failing the whole result; a failed metrics-server
 start doesn't crash the harvest. Process-level recovery (systemd
 `Restart=on-failure`, or Docker's restart policy) is configured in
@@ -173,9 +203,10 @@ metrics this codebase actually emits.
 The full, honest list is in [README "Honest limitations"](README.md#honest-limitations)
 and is intentionally not duplicated here. In short: direct-to-Google fetching
 over plain HTTP is confirmed blocked at the consent/JS-check layer; headless
-rendering now exists (`mode: playwright`) but is unverified against live
-Google, and there is no CAPTCHA handling or evasion on either direct path (a
-deliberate scope boundary, not an oversight);
+rendering (`mode: playwright`, `mode: hybrid`) and the adaptive throttling,
+cooldown and failover logic exist but are unverified against live Google,
+and there is no CAPTCHA handling or evasion on any direct path (a deliberate
+scope boundary, not an oversight);
 the provider fetch path is the one built for real volume; and no number in
 this repository claims a production operating history that doesn't exist —
 see the "Production history" note in the README's top summary.

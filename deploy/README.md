@@ -95,6 +95,42 @@ This image renders pages; it does not get past CAPTCHAs, blocks or rate
 limits. See README "Browser mode (Playwright)" for what it does and doesn't
 do.
 
+### Testing the stack in Docker
+
+`deploy/docker-compose.test.yml` is an overlay for reproducible test runs,
+driven by `scripts/compose-test.sh` (or `make integration` / `make e2e`).
+It uses its own project name, publishes no ports, uses throwaway passwords
+and removes its volumes afterwards, so it doesn't touch a stack you run
+yourself.
+
+- `make integration` builds `deploy/test.Dockerfile` (the official
+  Playwright image plus Go) and runs `go test ./...` against the stack's
+  Redis and PostgreSQL with Chromium. It fails if any of the browser,
+  PostgreSQL or pipeline tests is skipped rather than run.
+- `make e2e` starts the real `harvester-playwright` image in `mode: hybrid`
+  with `deploy/test/config.e2e.yaml`, pointed at a fictional site served by
+  the `fixture` service through three scripted proxies (always CAPTCHA'd,
+  rate-limited once, good). It pushes jobs into Redis, waits for fully
+  parsed rows in PostgreSQL, and checks the container's `/metrics` for the
+  detected CAPTCHA and the HTTP-to-browser failovers. No real search engine
+  is contacted.
+
+Docker is only a convenience here: the same tests run against local
+services (see README "Running the tests with or without Docker"), and the
+harvester itself never needs Docker.
+
+### Building behind a TLS-inspecting proxy
+
+If image builds fail with `SSL certificate problem` / curl exit code 60
+(a corporate or sandbox proxy re-signing TLS), pass the proxy's CA bundle as
+a build secret. It is used only by the download steps and never stored in
+an image:
+
+```bash
+EXTRA_CA_FILE=/path/to/ca-bundle.pem docker compose -f deploy/docker-compose.yml --profile playwright build
+docker build --secret id=extra_ca,src=/path/to/ca-bundle.pem -f deploy/playwright.Dockerfile .
+```
+
 ## Option 2: systemd (bare-metal / VM)
 
 ```bash

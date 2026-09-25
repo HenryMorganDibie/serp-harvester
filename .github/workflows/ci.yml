@@ -7,6 +7,21 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Real Redis and PostgreSQL, so the store and pipeline integration tests
+    # run instead of skipping.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: harvester
+          POSTGRES_PASSWORD: ci-only
+          POSTGRES_DB: serp_harvester
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U harvester -d serp_harvester" --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -21,6 +36,9 @@ jobs:
       - run: go test ./... -v
         env:
           SERP_HARVESTER_PLAYWRIGHT: "1"
+          INTEGRATION: "1"
+          REDIS_ADDR: "localhost:6379"
+          POSTGRES_TEST_DSN: "postgres://harvester:ci-only@localhost:5432/serp_harvester?sslmode=disable"
       - run: go build -o bin/harvester ./cmd/harvester
       - name: run mock harvest end to end
         run: ./bin/harvester -config configs/config.example.yaml -mode mock

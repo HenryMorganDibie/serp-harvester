@@ -1,6 +1,12 @@
 // Package worker runs a pool of concurrent goroutines that pull jobs off a
 // queue, fetch, parse, and sink the result — with per-proxy rate limiting,
 // retry with backoff, and proxy health tracking wired in on every request.
+//
+// Every fetch result is classified (fetcher.Classify) and fed back: to the
+// proxy pool (health, cooldowns), to the rate limiter (adaptive per-proxy
+// throttling) and to metrics. A rate limit or block page fails the attempt
+// over to another proxy immediately; errors that retrying cannot fix (4xx)
+// end the job early. Blocks are detected and routed around, never bypassed.
 package worker
 
 import (
@@ -52,6 +58,10 @@ type Pool struct {
 	// used for percentile reporting (see cmd/loadtest). Nil is safe: no
 	// latency tracking occurs.
 	Latencies *metrics.LatencyRecorder
+
+	// MaxProxyWait bounds how long an attempt waits for a proxy to leave
+	// cooldown when every proxy is cooling. Zero means 2 minutes.
+	MaxProxyWait time.Duration
 }
 
 // Run starts Concurrency workers consuming jobs, and blocks until jobs is
@@ -85,27 +95,28 @@ func (p *Pool) runWorker(ctx context.Context, jobs <-chan queue.Job) {
 
 func (p *Pool) process(ctx context.Context, job queue.Job) {
 	var lastErr error
-	var rateLimitDelay time.Duration // set when the target tells us how long to wait, honored instead of generic backoff
+	// failover is set when the last attempt was rate-limited or blocked:
+	// that proxy is now cooling, so the retry goes straight to another one
+	// (or waits for the cooldown if none is available) instead of backing
+	// off first.
+	failover := false
 
 	for attempt := 0; attempt <= p.MaxRetries; attempt++ {
 		if attempt > 0 {
 			p.Metrics.IncRetried()
-			if rateLimitDelay > 0 {
-				select {
-				case <-time.After(rateLimitDelay):
-				case <-ctx.Done():
-					p.Metrics.IncDropped()
-					log.Printf("worker: job %q dropped waiting out rate limit: %v", job.Query, ctx.Err())
-					return
-				}
-				rateLimitDelay = 0
-			} else {
-				backoff(attempt)
+			if !failover && !sleepCtx(ctx, backoffDuration(attempt)) {
+				p.drop(job, ctx.Err())
+				return
 			}
 		}
+		failover = false
 
-		px, err := p.ProxyPool.Next()
+		px, err := p.nextProxy(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				p.drop(job, ctx.Err())
+				return
+			}
 			lastErr = err
 			continue
 		}
@@ -116,8 +127,7 @@ func (p *Pool) process(ctx context.Context, job queue.Job) {
 			// unaccounted for, so success+dropped stays a complete count of
 			// every job actually attempted — found via soak testing, where
 			// jobs in flight at the exact cutoff need to land somewhere.
-			p.Metrics.IncDropped()
-			log.Printf("worker: job %q dropped: %v", job.Query, err)
+			p.drop(job, err)
 			return
 		}
 
@@ -131,16 +141,23 @@ func (p *Pool) process(ctx context.Context, job queue.Job) {
 		}
 
 		resp, err := p.Fetcher.Fetch(ctx, req)
-		if newlyBanned := p.ProxyPool.ReportResult(px, err); newlyBanned {
-			p.Metrics.IncProxyBanned()
+		outcome := fetcher.Classify(err)
+		if err != nil && ctx.Err() != nil {
+			outcome = fetcher.OutcomeCanceled // shutdown, not the proxy's fault
 		}
+		p.Metrics.IncOutcome(outcome.String())
+		p.recordOutcome(px, outcome, err)
 		if err != nil {
+			if outcome == fetcher.OutcomeCanceled {
+				p.drop(job, err)
+				return
+			}
 			lastErr = err
 			p.Metrics.IncFailure()
-			var rlErr *fetcher.RateLimitError
-			if errors.As(err, &rlErr) && rlErr.RetryAfter > 0 {
-				rateLimitDelay = rlErr.RetryAfter
+			if !outcome.Retryable() {
+				break
 			}
+			failover = outcome == fetcher.OutcomeRateLimited || outcome.Blocked()
 			continue
 		}
 		if p.Latencies != nil {
@@ -184,6 +201,90 @@ func (p *Pool) process(ctx context.Context, job queue.Job) {
 	log.Printf("worker: job %q dropped after %d attempts: %v", job.Query, p.MaxRetries+1, lastErr)
 }
 
+// drop records a job abandoned because the run is shutting down.
+func (p *Pool) drop(job queue.Job, err error) {
+	p.Metrics.IncDropped()
+	log.Printf("worker: job %q dropped: %v", job.Query, err)
+}
+
+// nextProxy returns a proxy that is not cooling. When every proxy is
+// cooling it waits for the soonest one to recover, up to MaxProxyWait,
+// rather than burning retries against ErrAllBanned.
+func (p *Pool) nextProxy(ctx context.Context) (*proxy.Proxy, error) {
+	maxWait := p.MaxProxyWait
+	if maxWait <= 0 {
+		maxWait = 2 * time.Minute
+	}
+	deadline := time.Now().Add(maxWait)
+	for {
+		px, err := p.ProxyPool.Next()
+		if !errors.Is(err, proxy.ErrAllBanned) {
+			return px, err
+		}
+		at := p.ProxyPool.NextAvailableAt()
+		if at.IsZero() {
+			continue // one just recovered
+		}
+		if at.After(deadline) {
+			return nil, err
+		}
+		if !sleepCtx(ctx, time.Until(at)) {
+			return nil, ctx.Err()
+		}
+	}
+}
+
+// recordOutcome feeds a classified fetch result back to the proxy pool
+// (health and cooldowns) and the rate limiter (adaptive throttling).
+func (p *Pool) recordOutcome(px *proxy.Proxy, outcome fetcher.Outcome, err error) {
+	var retryAfter time.Duration
+	var rl *fetcher.RateLimitError
+	if errors.As(err, &rl) {
+		retryAfter = rl.RetryAfter
+	}
+	if p.ProxyPool.ReportOutcome(px, proxyOutcome(outcome), retryAfter) {
+		p.Metrics.IncProxyBanned()
+		p.Metrics.IncProxyCooldown(cooldownReason(outcome))
+	}
+	switch {
+	case outcome == fetcher.OutcomeSuccess:
+		p.Limiter.Reward(px.Key())
+	case outcome == fetcher.OutcomeRateLimited || outcome.Blocked():
+		if p.Limiter.Penalize(px.Key()) {
+			p.Metrics.IncRateDecrease()
+		}
+	}
+}
+
+// proxyOutcome maps a fetch outcome to what it says about the proxy.
+// Consent walls and client errors are about the request or region, not the
+// proxy, so they leave its health alone.
+func proxyOutcome(o fetcher.Outcome) proxy.Outcome {
+	switch o {
+	case fetcher.OutcomeSuccess:
+		return proxy.Success
+	case fetcher.OutcomeRateLimited:
+		return proxy.RateLimited
+	case fetcher.OutcomeCaptcha, fetcher.OutcomeInterstitial:
+		return proxy.Blocked
+	case fetcher.OutcomeConsent, fetcher.OutcomeClientError, fetcher.OutcomeCanceled:
+		return proxy.Neutral
+	default:
+		return proxy.Failure
+	}
+}
+
+func cooldownReason(o fetcher.Outcome) string {
+	switch {
+	case o == fetcher.OutcomeRateLimited:
+		return "rate_limited"
+	case o.Blocked():
+		return "blocked"
+	default:
+		return "failures"
+	}
+}
+
 // localeLanguage and localeCountry split a "COUNTRY-language" locale hint
 // (e.g. "US-en") into its two parts. An empty or malformed locale yields
 // empty strings for both, which fetchers treat as "use the target/provider
@@ -204,15 +305,31 @@ func localeLanguage(locale string) string {
 	return lang
 }
 
-// backoff sleeps for an exponential delay with jitter, capped at 2s. This is
-// deliberately short since mock-mode runs should stay fast; a live
-// production deployment would use longer, configurable backoff tied to the
-// client's agreed request budget.
-func backoff(attempt int) {
+// backoffDuration is an exponential delay with jitter, capped at 2s. This
+// is deliberately short since mock-mode runs should stay fast; pacing
+// against a live target comes from the rate limiter and proxy cooldowns,
+// not from this retry delay.
+func backoffDuration(attempt int) time.Duration {
 	base := time.Duration(1<<uint(attempt)) * 50 * time.Millisecond
 	if base > 2*time.Second {
 		base = 2 * time.Second
 	}
 	jitter := time.Duration(rand.Int63n(int64(base) / 2))
-	time.Sleep(base + jitter)
+	return base + jitter
+}
+
+// sleepCtx sleeps for d or until ctx is done, reporting false if ctx ended
+// first.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }

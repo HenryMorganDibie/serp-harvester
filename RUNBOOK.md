@@ -200,7 +200,7 @@ stream `serp-harvester:queries`).
      stream entry redelivered after a consumer crash can write a second
      row, so the count can be higher.
 
-## Playwright mode (`mode: playwright`)
+## Playwright mode (`mode: playwright`, `mode: hybrid`)
 
 Browser mode renders pages; it does not get past CAPTCHAs, blocks or rate
 limits. Most alerts below mean "the target is challenging this egress", and
@@ -226,7 +226,7 @@ code workaround.
    - `consent`: a consent page with no "reject all" form the fetcher
      recognises. Capture one (run with `browser_headful: true` locally)
      and compare it with `classifyPage` / `rejectConsentForm` in
-     `internal/fetcher/playwright.go`; the markup may have changed.
+     `internal/fetcher/classify.go`; the markup may have changed.
    - `interstitial`: the JS check persisted after rendering. Treat it like
      `captcha`.
 3. `serp_harvester_browser_navigation_timeouts_total` rising: pages aren't
@@ -240,6 +240,12 @@ code workaround.
    `shm_size` is set (Docker's 64MB `/dev/shm` crashes tabs). Lower
    `browser_pool_size` before raising limits. Fetches in flight during a
    crash fail and are retried; the browser relaunches on the next fetch.
+   `serp_harvester_browser_launch_failures_total` rising means relaunches
+   themselves fail (fetches then fail fast with "launch backoff" for up to
+   30s between attempts): check the logs for the launch error, usually a
+   missing browser or libraries after an image change.
+   `serp_harvester_browser_page_crashes_total` counts renderer crashes;
+   those sessions are replaced without restarting the browser.
 5. Throughput lower than expected: compare
    `serp_harvester_browser_sessions_in_use` with `browser_pool_size`. If
    it's pinned at the pool size, workers are waiting for sessions; raising
@@ -251,6 +257,37 @@ code workaround.
    pool: check `browser_executable_path` and `browser_headful`. A full
    Chrome/Chromium build makes its own background requests to Google;
    Playwright's headless shell (the default) does not.
+
+## All proxies cooling / target pushing back
+
+Symptom: `ProxyPoolExhausted` (`serp_harvester_proxies_available` is 0) or
+`TargetPushingBack` (rate-limited or blocked fetches in
+`serp_harvester_fetch_outcomes_total`).
+
+1. See why proxies are cooling: `serp_harvester_proxy_cooldowns_total` by
+   `reason`.
+   - `rate_limited`: the target is sending 429s. Each proxy already cools
+     for its `Retry-After` and adaptive throttling has halved its rate
+     (`serp_harvester_proxies_throttled`,
+     `serp_harvester_ratelimit_decreases_total`). If it keeps happening,
+     lower `rate_per_proxy_rps` so proxies stop reaching the limit.
+   - `blocked`: CAPTCHA or JS-check pages. Cooldowns double per repeat, up
+     to `proxy_ban_cooldown_max`. This is the target refusing this egress;
+     the fix is less volume, different egress, or the provider path. There
+     is deliberately no code path that gets past it.
+   - `failures`: timeouts, connection or 5xx errors. Check the proxies
+     themselves before the target.
+2. While every proxy is cooling, jobs wait up to `max_proxy_wait` for one
+   to recover, then that attempt fails; `serp_harvester_dropped_total`
+   rising means waits are running out. Adding proxies helps; raising
+   `max_retries` or `max_proxy_wait` only holds jobs longer.
+3. `serp_harvester_fetch_outcomes_total{outcome="http_4xx"}` rising is
+   different: those jobs end without retries because retrying can't fix
+   them. Usually a wrong `live_endpoint` or a changed URL format.
+4. In `mode: hybrid`, `serp_harvester_fetch_failovers_total` close to the
+   request count means nearly every plain-HTTP fetch needs the browser (a
+   JS check). That's expected against Google today; `mode: playwright`
+   skips the wasted HTTP attempt.
 
 ## Known gaps this runbook can't cover yet
 

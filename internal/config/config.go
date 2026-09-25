@@ -19,6 +19,10 @@ type Config struct {
 	//   "playwright" - headless Chromium renders LiveEndpoint's results
 	//                page; the rendered HTML goes through the same HTML
 	//                parser as "live".
+	//   "hybrid"   - "live" first; a fetch that hits a JS-check
+	//                interstitial or an undismissable consent wall is
+	//                retried in the browser ("playwright"). CAPTCHAs are
+	//                not retried in the browser.
 	Mode string `yaml:"mode"`
 
 	Queries []string `yaml:"queries"`
@@ -39,13 +43,24 @@ type Config struct {
 	// (or per direct egress IP, if Proxies is empty).
 	RatePerProxyRPS float64 `yaml:"rate_per_proxy_rps"`
 	RateBurst       int     `yaml:"rate_burst"`
+	// AdaptiveRate halves a proxy's rate when the target rate-limits or
+	// blocks it and recovers it gradually on success (AIMD), between
+	// RateMinRPS (default RatePerProxyRPS/10) and RatePerProxyRPS.
+	AdaptiveRate bool    `yaml:"adaptive_rate"`
+	RateMinRPS   float64 `yaml:"rate_min_rps"`
 
 	Proxies          []string      `yaml:"proxies"`
 	ProxyBanFails    int           `yaml:"proxy_ban_fails"`
 	ProxyBanCooldown time.Duration `yaml:"proxy_ban_cooldown"`
+	// ProxyBanCooldownMax caps escalating cooldowns: each cooldown since a
+	// proxy's last success doubles ProxyBanCooldown, up to this.
+	ProxyBanCooldownMax time.Duration `yaml:"proxy_ban_cooldown_max"`
 	// ProxyStrategy selects proxy.Strategy: "round_robin" (default),
-	// "random", or "weighted_success_rate".
+	// "random", or "weighted_success_rate" (weighted by recent health).
 	ProxyStrategy string `yaml:"proxy_strategy"`
+	// MaxProxyWait bounds how long a job waits for a proxy to leave
+	// cooldown when all proxies are cooling, before that attempt fails.
+	MaxProxyWait time.Duration `yaml:"max_proxy_wait"`
 
 	LiveEndpoint   string        `yaml:"live_endpoint"`
 	RequestTimeout time.Duration `yaml:"request_timeout"`
@@ -123,6 +138,10 @@ func Default() Config {
 
 		BrowserPoolSize:       4,
 		BrowserMaxSessionUses: 50,
+
+		AdaptiveRate:        true,
+		ProxyBanCooldownMax: 10 * time.Minute,
+		MaxProxyWait:        2 * time.Minute,
 	}
 }
 

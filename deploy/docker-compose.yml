@@ -105,6 +105,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/playwright.Dockerfile
+      secrets: [extra_ca]
     depends_on:
       redis:
         condition: service_healthy
@@ -202,6 +203,13 @@ services:
           cpus: "0.5"
           memory: 256M
     restart: unless-stopped
+
+# Optional CA bundle for building images behind a TLS-inspecting proxy:
+# EXTRA_CA_FILE=/path/to/ca-bundle.pem docker compose ... build. Unset, the
+# secret is empty and the builds ignore it.
+secrets:
+  extra_ca:
+    file: ${EXTRA_CA_FILE:-/dev/null}
 
 volumes:
   redis-data:

@@ -1,4 +1,4 @@
-.PHONY: build test test-playwright playwright-install vet run-mock loadtest redis-up redis-down
+.PHONY: build test test-playwright playwright-install integration e2e vet run-mock loadtest redis-up redis-down
 
 build:
 	go build -o bin/harvester ./cmd/harvester
@@ -14,6 +14,16 @@ test-playwright:
 
 playwright-install:
 	sh scripts/install-playwright.sh --with-deps
+
+# Reproducible runs in Docker (isolated project, throwaway passwords):
+# `integration` runs go test ./... with real Redis, PostgreSQL and Chromium;
+# `e2e` runs the harvester-playwright image against the fixture site. Set
+# EXTRA_CA_FILE when building behind a TLS-inspecting proxy.
+integration:
+	sh scripts/compose-test.sh integration
+
+e2e:
+	sh scripts/compose-test.sh e2e
 
 vet:
 	go vet ./...
