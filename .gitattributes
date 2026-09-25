@@ -1,0 +1,10 @@
+# Keep LF line endings on every platform. On Windows, core.autocrlf would
+# otherwise check out CRLF, and shell scripts, Dockerfiles and YAML copied
+# into Linux containers then fail (sh reads the \r as part of commands).
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.pdf binary
